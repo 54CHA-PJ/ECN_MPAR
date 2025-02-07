@@ -48,13 +48,13 @@ class gramPrintListener(gramListener):
         self.transitions.append(("MC", dep, None, ids, weights))
         
     def describe(self):
-        print(Fore.LIGHTBLUE_EX + "\n-----------------------------------------------------" + Style.RESET_ALL)
+        print(Fore.LIGHTBLUE_EX + "-----------------------------------------------------" + Style.RESET_ALL)
         print(Fore.LIGHTBLUE_EX + "States: " + Style.RESET_ALL, self.states)
         print(Fore.LIGHTBLUE_EX + "Actions: " + Style.RESET_ALL, self.actions)
         print(Fore.LIGHTBLUE_EX + "Transitions:" + Style.RESET_ALL)
         for t in self.transitions:
             print(" -", t)
-        print(Fore.LIGHTBLUE_EX + "-----------------------------------------------------\n" + Style.RESET_ALL)
+        print(Fore.LIGHTBLUE_EX + "-----------------------------------------------------" + Style.RESET_ALL)
             
     def validate(self):
         valid = True
@@ -75,8 +75,10 @@ class gramPrintListener(gramListener):
                         valid = False
         return valid
 
-def check(model):
+def check(model, model_name):
+    print(Fore.LIGHTBLUE_EX + f"\nModel: {model_name}" + Style.RESET_ALL)
     model.describe()
+    print()
     if not model.validate():
         print(Fore.LIGHTRED_EX + "Model is not valid! Quitting ...\n" + Style.RESET_ALL)
         sys.exit(1)
@@ -238,7 +240,7 @@ class MainWindow(QMainWindow):
         walker = ParseTreeWalker()
         walker.walk(printer, tree)
 
-        check(printer)
+        check(printer, fileName)
         self.canvas.plot_model(printer)
 
 def main():
