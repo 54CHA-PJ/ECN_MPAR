@@ -1,3 +1,6 @@
+## MPAR - TP
+CRUZ Sacha
+LEDUC Jun
 
 ### Installation
 
@@ -11,7 +14,7 @@ conda install antlr4-python3-runtime
 antlr4 gram.g4
 ```
 
-### Compilation
+### Utilisation
 
 ```bash
 python mdp.py ex.mdp

@@ -1,27 +1,32 @@
 import sys
 import matplotlib
-matplotlib.use('Qt5Agg')
 import matplotlib.pyplot as plt
 import networkx as nx
 
-from PyQt5.QtWidgets import (
-    QApplication, QMainWindow, QWidget,
-    QVBoxLayout, QHBoxLayout, QPushButton, QFileDialog
-)
+from PyQt5.QtWidgets import QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QPushButton, QFileDialog
 from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
 
-# ANTLR et imports locaux du parser
 from antlr4 import InputStream, CommonTokenStream, ParseTreeWalker
 from gramLexer import gramLexer
 from gramParser import gramParser
 from gramListener import gramListener
 from colorama import Fore, Style, init as colorama_init
 
-# Fichier exemple par défaut.
-DEFAULT_EXAMPLE_FILE = "ex.mdp"
+matplotlib.use('Qt5Agg')
+DEFAULT_FILE = "ex.mdp"
 
-# --- Le Listener (inchangé) ---
 class gramPrintListener(gramListener):
+    """ 
+    Fields:
+    - states: set of states (strings)
+    - actions: set of actions (strings)
+    - transitions:
+        - type: "MDP" or "MC"
+        - dep: departure state
+        - act: action (if MDP)
+        - dest_states: list of destination states
+        - weights: list of weights
+    """
     def __init__(self):
         super().__init__()
         self.states = set()
@@ -75,16 +80,21 @@ class gramPrintListener(gramListener):
                         valid = False
         return valid
 
-def check(model, model_name):
-    print(Fore.LIGHTBLUE_EX + f"\nModel: {model_name}" + Style.RESET_ALL)
+# Check model validity
+def check(model, name):
+    """ Check model validity and print results
+    Args:
+        model (gramPrintListener): model to check
+        name (str): file name
+    """
+    print(Fore.LIGHTBLUE_EX + f"\nModel: {name}" + Style.RESET_ALL)
     model.describe()
-    print()
     if not model.validate():
-        print(Fore.LIGHTRED_EX + "Model is not valid! Quitting ...\n" + Style.RESET_ALL)
+        print(Fore.LIGHTRED_EX + "Model is not valid! Quitting..." + Style.RESET_ALL)
         sys.exit(1)
-    print(Fore.LIGHTGREEN_EX + "Model is valid!\n" + Style.RESET_ALL)
+    print(Fore.LIGHTGREEN_EX + "Model is valid!" + Style.RESET_ALL)
 
-# --- Canvas de tracé ---
+# Class for plotting the model
 class PlotCanvas(FigureCanvas):
     def __init__(self, parent=None, width=10, height=6, dpi=100):
         self.fig, self.ax = plt.subplots(figsize=(width, height), dpi=dpi)
@@ -92,162 +102,145 @@ class PlotCanvas(FigureCanvas):
         self.setParent(parent)
         self.show_welcome()
 
+    # Show home screen
     def show_welcome(self):
         self.ax.clear()
-        self.ax.set_xticks([])
-        self.ax.set_yticks([])
-        for spine in self.ax.spines.values():
-            spine.set_visible(False)
-        self.ax.text(0.5, 0.5, "Bienvenue au simulateur MC/MDP",
-                     ha='center', va='center', transform=self.ax.transAxes, fontsize=16)
+        self.ax.axis('off')
+        self.ax.text(
+            0.5, 0.6, "Welcome to the MC/MDP Simulator!",
+            ha='center', va='center', transform=self.ax.transAxes, fontsize=16
+        )
+        self.ax.text(
+            0.5, 0.4, "made by Sacha Cruz and Jun Leduc",
+            ha='center', va='center', transform=self.ax.transAxes, fontsize=12
+        )
         self.draw()
 
+    # Plot model
     def plot_model(self, model):
         self.ax.clear()
-        self.ax.set_xticks([])
-        self.ax.set_yticks([])
-        for spine in self.ax.spines.values():
-            spine.set_visible(False)
-        
-        # Construction d'un MultiDiGraph avec toutes les arêtes.
-        G = nx.MultiDiGraph()
-        for t in model.transitions:
-            trans_type, dep, action, dest_states, weights = t
-            total = sum(weights)
-            probs = [w / total for w in weights]
-            arrow_type = "MDP" if action else "MC"  # Détermine le type d'arc
-            for i, dest in enumerate(dest_states):
-                label = f"[{action}]\n{probs[i]:.2f}" if action else f"{probs[i]:.2f}"
-                col = 'blue' if action else 'red'
-                G.add_edge(dep, dest, label=label, color=col, arrow_type=arrow_type)
-        
+        self.ax.axis('off')
+        G = self.build_graph(model)
         pos = nx.spring_layout(G, seed=0)
         nx.draw_networkx_nodes(G, pos, node_color='lightgray', ax=self.ax)
         nx.draw_networkx_labels(G, pos, ax=self.ax)
-        
-        # Regroupement par paire orientée : clé = (u,v)
+        self.draw_better_edges(G, pos)
+        self.draw()
+
+    def build_graph(self, model):
+        """
+        Each transition is added as an edge with attributes:
+         - label: shows action (if MDP) and the probability
+         - color: blue (MDP) or red (MC)
+         - arrow_type: "MDP" or "MC"
+        """
+        G = nx.MultiDiGraph()
+        for t in model.transitions:
+            _, dep, action, dest_states, weights = t
+            total = sum(weights)
+            probs = [w / total for w in weights]
+            arrow_type = "MDP" if action else "MC"
+            for i, dest in enumerate(dest_states):
+                label = f"[{action}]\n{probs[i]:.2f}" if action else f"{probs[i]:.2f}"
+                color = 'blue' if action else 'red'
+                G.add_edge(dep, dest, label=label, color=color, arrow_type=arrow_type)
+        return G
+
+    def draw_better_edges(self, G, pos):
         groups = {}
-        for u, v, data in ((u, v, d) for u, v, d in G.edges(data=True)):
-            groups.setdefault((u,v), []).append(data)
-        
-        base_offset = 1/3
-        # Identifier les groupes opposés
-        opposite = {}
-        for (u,v) in groups:
-            if (v,u) in groups:
-                opposite[(u,v)] = True
-                opposite[(v,u)] = True
-        
-        for (u,v), data_list in groups.items():
-            n = len(data_list)
-            if n % 2 == 1:
-                offsets = [(i - n//2) * base_offset for i in range(n)]
-            else:
-                offsets = [(i - n/2 + 0.5) * base_offset for i in range(n)]
-            # Conserver l'ordre d'insertion (sans tri)
-            # Si le groupe a un opposé et que (u,v) est "secondaire" (u > v), on ajoute un décalage supplémentaire
-            adjust = ((u,v) in opposite) and (u > v)
-            for offset, data in zip(offsets, data_list):
-                # Inverse l'offset pour les arcs MC
-                cur_offset = -offset if data.get('arrow_type') == "MC" else offset
+        for u, v, d in G.edges(data=True):
+            groups.setdefault((u, v), []).append(d)
+        base_offset = 0.33
+        opp = {(u, v) for (u, v) in groups if (v, u) in groups}
+        for (u, v), eds in groups.items():
+            offs = [((i - (len(eds) - 1) / 2) * base_offset) for i in range(len(eds))]
+            adjust = (u, v) in opp and u > v
+            for off, d in zip(offs, eds):
+                cur = -off if d.get('arrow_type') == "MC" else off
                 if adjust:
-                    cur_offset = cur_offset + (base_offset if cur_offset >= 0 else -base_offset)
+                    cur += base_offset if cur >= 0 else -base_offset
                 if u == v:
-                    loop_rad = 0.2 + abs(cur_offset)
                     nx.draw_networkx_edges(
                         G, pos, edgelist=[(u, v)],
-                        edge_color=[data['color']],
-                        connectionstyle=f'arc3, rad={loop_rad}',
-                        ax=self.ax
+                        edge_color=[d['color']],
+                        connectionstyle=f'arc3, rad={0.2 + abs(cur)}', ax=self.ax
                     )
                     x, y = pos[u]
-                    self.ax.text(x + cur_offset, y + 0.15, data['label'],
-                                 fontsize=10, color=data['color'],
-                                 ha='center', va='center',
-                                 bbox=dict(facecolor='none', edgecolor='none', pad=0))
+                    self.ax.text(x + cur, y + 0.22, d['label'], fontsize=10,
+                                color=d['color'], ha='center', va='center')
                 else:
                     nx.draw_networkx_edges(
                         G, pos, edgelist=[(u, v)],
-                        edge_color=[data['color']],
-                        connectionstyle=f'arc3, rad={cur_offset}',
-                        ax=self.ax
+                        edge_color=[d['color']],
+                        connectionstyle=f'arc3, rad={cur}', ax=self.ax
                     )
                     x1, y1 = pos[u]
                     x2, y2 = pos[v]
                     xm, ym = (x1 + x2) / 2, (y1 + y2) / 2
                     dx, dy = x2 - x1, y2 - y1
-                    L = (dx**2 + dy**2)**0.5 if (dx, dy) != (0,0) else 1
-                    # Opération miroir : utiliser le vecteur perpendiculaire (dy/L, -dx/L)
+                    L = (dx ** 2 + dy ** 2) ** 0.5 or 1
                     perp = (dy / L, -dx / L)
-                    lx = xm + cur_offset * 0.5 * perp[0]
-                    ly = ym + cur_offset * 0.5 * perp[1]
-                    self.ax.text(lx, ly, data['label'], fontsize=10, color=data['color'],
-                                 ha='center', va='center',
-                                 bbox=dict(facecolor='none', edgecolor='none', pad=0))
-        
-        self.draw()
+                    self.ax.text(xm + cur * 0.5 * perp[0], ym + cur * 0.5 * perp[1],
+                                d['label'], fontsize=10, color=d['color'],
+                                ha='center', va='center')
 
-# --- Fenêtre principale ---
+# Main interface of the application
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
         self.setWindowTitle("MDP/MC Model Visualizer")
-        self.resize(800, 600)
+        self.resize(800,600)
         colorama_init()
-
         self.canvas = PlotCanvas(self, width=10, height=6, dpi=100)
         self.loadButton = QPushButton("Load Model File")
         self.loadButton.clicked.connect(self.load_file)
         self.exampleButton = QPushButton("Use Example")
         self.exampleButton.clicked.connect(self.load_example)
-
-        buttonLayout = QHBoxLayout()
-        buttonLayout.addWidget(self.loadButton)
-        buttonLayout.addWidget(self.exampleButton)
-
-        centralWidget = QWidget()
-        layout = QVBoxLayout(centralWidget)
-        layout.addLayout(buttonLayout)
+        layout = QVBoxLayout()
+        hlayout = QHBoxLayout()
+        hlayout.addWidget(self.loadButton)
+        hlayout.addWidget(self.exampleButton)
+        layout.addLayout(hlayout)
         layout.addWidget(self.canvas)
-        self.setCentralWidget(centralWidget)
+        central = QWidget()
+        central.setLayout(layout)
+        self.setCentralWidget(central)
 
+    # Load model from MDP file
     def load_file(self):
-        options = QFileDialog.Options()
-        fileName, _ = QFileDialog.getOpenFileName(
-            self, "Open Model File", "",
-            "MDP Files (*.mdp);;All Files (*)", options=options
-        )
-        if fileName:
-            self.process_file(fileName)
-
+        fname, _ = QFileDialog.getOpenFileName(self, "Open Model File", "", "MDP Files (*.mdp);;All Files (*)")
+        if fname:
+            self.process_file(fname)
+            
+    # Load example model (ex.mdp)
     def load_example(self):
-        self.process_file(DEFAULT_EXAMPLE_FILE)
+        self.process_file(DEFAULT_FILE)
 
-    def process_file(self, fileName):
-        try:
-            with open(fileName, 'r') as f:
-                content = f.read()
-        except Exception as e:
-            print(f"Error opening file {fileName}: {e}")
-            return
-
-        input_stream = InputStream(content)
-        lexer = gramLexer(input_stream)
-        token_stream = CommonTokenStream(lexer)
-        parser = gramParser(token_stream)
+    # Convert file content to model 
+    def process_file(self, fname):
+        # Open file
+        with open(fname, 'r') as f:
+            content = f.read()
+        # Parse content
+        stream = InputStream(content)
+        lexer = gramLexer(stream)
+        tokens = CommonTokenStream(lexer)
+        parser = gramParser(tokens)
         tree = parser.program()
-        printer = gramPrintListener()
+        # Build model
+        model = gramPrintListener()
         walker = ParseTreeWalker()
-        walker.walk(printer, tree)
-
-        check(printer, fileName)
-        self.canvas.plot_model(printer)
-
-def main():
-    app = QApplication(sys.argv)
-    window = MainWindow()
-    window.show()
-    sys.exit(app.exec_())
+        walker.walk(model, tree)
+        # Check model validity
+        check(model, fname)
+        # Plot model graph in canvas
+        self.canvas.plot_model(model)
 
 if __name__ == '__main__':
-    main()
+    app = QApplication(sys.argv)
+    win = MainWindow()
+    if len(sys.argv) >= 2:
+        fname = sys.argv[1]
+        win.process_file(fname)
+    win.show()
+    sys.exit(app.exec_())
