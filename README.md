@@ -2,6 +2,7 @@
 CRUZ Sacha
 LEDUC Jun
 
+---
 ### Installation
 
 ```bash
@@ -14,8 +15,11 @@ conda install antlr4-python3-runtime
 antlr4 gram.g4
 ```
 
+---
 ### Utilisation
 
-```bash
-python mdp.py ex.mdp
-```
+`python mdp.py`
+
+**OU**
+
+`python mdp.py NOMFICHIER.mdp`
