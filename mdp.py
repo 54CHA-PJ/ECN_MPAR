@@ -15,6 +15,9 @@ from colorama import Fore, Style, init as colorama_init
 matplotlib.use('Qt5Agg')
 DEFAULT_FILE = "ex.mdp"
 
+# --------------------
+# GRAMMAR PARSER
+
 class gramPrintListener(gramListener):
     """ 
     Fields:
@@ -93,6 +96,9 @@ def check(model, name):
         print(Fore.LIGHTRED_EX + "Model is not valid! Quitting..." + Style.RESET_ALL)
         sys.exit(1)
     print(Fore.LIGHTGREEN_EX + "Model is valid!" + Style.RESET_ALL)
+    
+# --------------------
+# USER INTERFACE
 
 # Class for plotting the model
 class PlotCanvas(FigureCanvas):
@@ -183,6 +189,9 @@ class PlotCanvas(FigureCanvas):
                     self.ax.text(xm + cur * 0.5 * perp[0], ym + cur * 0.5 * perp[1],
                                 d['label'], fontsize=10, color=d['color'],
                                 ha='center', va='center')
+
+# --------------------
+# MAIN INTERFACE
 
 # Main interface of the application
 class MainWindow(QMainWindow):
