@@ -151,7 +151,6 @@ class PlotCanvas(FigureCanvas):
         self.setParent(parent)
         self.show_welcome()
 
-    # Show home screen
     def show_welcome(self):
         self.ax.clear()
         self.ax.axis('off')
@@ -165,7 +164,6 @@ class PlotCanvas(FigureCanvas):
         )
         self.draw()
 
-    # Plot model
     def plot_model(self, model):
         self.ax.clear()
         self.ax.axis('off')
@@ -174,47 +172,6 @@ class PlotCanvas(FigureCanvas):
         nx.draw_networkx_nodes(G, pos, node_color='lightgray', ax=self.ax)
         nx.draw_networkx_labels(G, pos, ax=self.ax)
         self.draw_better_edges(G, pos)
-        self.draw()
-
-    # Plot simulation in one specific state
-    def plot_simulation_state(self, model, current_state, chosen_edge=None):
-        self.ax.clear()
-        self.ax.axis('off')
-        G = self.build_graph(model)
-        pos = nx.spring_layout(G, seed=0)
-        node_colors = ['red' if n == current_state else 'lightgray' for n in G.nodes()]
-        nx.draw_networkx_nodes(G, pos, node_color=node_colors, ax=self.ax)
-        nx.draw_networkx_labels(G, pos, ax=self.ax)
-        self.draw_better_edges(G, pos)
-        if chosen_edge is not None:
-            chosen_type, chosen_dep, chosen_action, chosen_dest = chosen_edge
-            groups = {}
-            for u, v, d in G.edges(data=True):
-                groups.setdefault((u, v), []).append(d)
-            if (chosen_dep, chosen_dest) in groups:
-                eds = groups[(chosen_dep, chosen_dest)]
-                base_offset = 0.33
-                offs = [((i - (len(eds) - 1) / 2) * base_offset) for i in range(len(eds))]
-                opp = {(u, v) for (u, v) in groups if (v, u) in groups}
-                adjust = ((chosen_dep, chosen_dest) in opp) and (chosen_dep > chosen_dest)
-                index = 0
-                for i, d in enumerate(eds):
-                    if chosen_type == "MDP":
-                        if d.get('label', '').startswith(f"[{chosen_action}]"):
-                            index = i
-                            break
-                    else:
-                        index = i
-                        break
-                off = offs[index]
-                cur = -off if eds[index].get('arrow_type') == "MC" else off
-                if adjust:
-                    cur += base_offset if cur >= 0 else -base_offset
-                nx.draw_networkx_edges(
-                    G, pos, edgelist=[(chosen_dep, chosen_dest)],
-                    edge_color='red', width=3,
-                    connectionstyle=f'arc3, rad={cur}', ax=self.ax
-                )
         self.draw()
 
     def build_graph(self, model):
@@ -279,25 +236,60 @@ class PlotCanvas(FigureCanvas):
                                  d['label'], fontsize=10, color=d['color'],
                                  ha='center', va='center')
 
+    def plot_simulation_state(self, model, current_state, chosen_edge=None):
+        self.ax.clear()
+        self.ax.axis('off')
+        G = self.build_graph(model)
+        pos = nx.spring_layout(G, seed=0)
+        node_colors = ['red' if n == current_state else 'lightgray' for n in G.nodes()]
+        nx.draw_networkx_nodes(G, pos, node_color=node_colors, ax=self.ax)
+        nx.draw_networkx_labels(G, pos, ax=self.ax)
+        self.draw_better_edges(G, pos)
+        if chosen_edge is not None:
+            chosen_type, chosen_dep, chosen_action, chosen_dest = chosen_edge
+            groups = {}
+            for u, v, d in G.edges(data=True):
+                groups.setdefault((u, v), []).append(d)
+            if (chosen_dep, chosen_dest) in groups:
+                eds = groups[(chosen_dep, chosen_dest)]
+                base_offset = 0.33
+                offs = [((i - (len(eds) - 1) / 2) * base_offset) for i in range(len(eds))]
+                opp = {(u, v) for (u, v) in groups if (v, u) in groups}
+                adjust = ((chosen_dep, chosen_dest) in opp) and (chosen_dep > chosen_dest)
+                index = 0
+                for i, d in enumerate(eds):
+                    if chosen_type == "MDP":
+                        if d.get('label', '').startswith(f"[{chosen_action}]"):
+                            index = i
+                            break
+                    else:
+                        index = i
+                        break
+                off = offs[index]
+                cur = -off if eds[index].get('arrow_type') == "MC" else off
+                if adjust:
+                    cur += base_offset if cur >= 0 else -base_offset
+                nx.draw_networkx_edges(
+                    G, pos, edgelist=[(chosen_dep, chosen_dest)],
+                    edge_color='red', width=3,
+                    connectionstyle=f'arc3, rad={cur}', ax=self.ax
+                )
+        self.draw()
+
 # --------------------
 # MAIN INTERFACE
 
 # Main interface of the application
 class MainWindow(QMainWindow):
     def __init__(self):
-        # Initialize parent class
         super().__init__()
-        # Window settings
         self.setWindowTitle("MDP/MC Simulator")
         self.resize(800, 600)
-        # Initialize colorama for colored console output
-        colorama_init()
-        # Model state variables
+        self.canvas = PlotCanvas(self, width=10, height=6, dpi=100)
         self.model = None  # Current loaded model
         self.simulation_running = False  # Simulation state
         self.current_state = "S0"  # Current (Initial) state in simulation
-        # Main canvas for graph visualization
-        self.canvas = PlotCanvas(self, width=10, height=6, dpi=100)
+        colorama_init()
         
         # Control buttons
         
@@ -432,7 +424,6 @@ class MainWindow(QMainWindow):
         print("Columns:\t", cols)
         for ind, row in enumerate(rows):
             print(desc[ind], row)
-        print()
 
 if __name__ == '__main__':
     app = QApplication(sys.argv)
