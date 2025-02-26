@@ -73,7 +73,6 @@ class gramPrintListener(gramListener):
         valid = True
         s0_exists = False
         for t in self.transitions:
-            # Check if it begins with S0
             if t[1] == "S0":
                 s0_exists = True
             # Check if an action is not declared
@@ -103,19 +102,44 @@ class gramPrintListener(gramListener):
         # Return the validity of the model
         return valid
 
-def check(model, name):
-    """ Check model validity and print results
-    Args:
-        model (gramPrintListener): model to check
-        name (str): file name
-    """
-    print(Fore.LIGHTBLUE_EX + f"\nModel: {name}" + Style.RESET_ALL)
-    model.describe()
-    if not model.validate():
-        print(Fore.LIGHTRED_EX + "Model is not valid! Quitting..." + Style.RESET_ALL)
-        sys.exit(1)
-    print(Fore.LIGHTGREEN_EX + "Model is valid!" + Style.RESET_ALL)
-    
+    def check(self, name):
+        """ Check model validity and print results
+        Args:
+            model (gramPrintListener): model to check
+            name (str): file name
+        """
+        print(Fore.LIGHTBLUE_EX + f"\nModel: {name}" + Style.RESET_ALL)
+        self.describe()
+        if not self.validate():
+            print(Fore.LIGHTRED_EX + "Model is not valid! Quitting..." + Style.RESET_ALL)
+            sys.exit(1)
+        print(Fore.LIGHTGREEN_EX + "Model is valid!" + Style.RESET_ALL)
+        
+    def get_matrix(self):
+        """ Generate transition matrix
+        - MC : Basic line with the probabilities
+        - MDP : One line for each action, and the probabilities
+        Returns:
+            mat(numpy.ndarray): transition matrix
+        """
+        import numpy as np
+        state_list = sorted(list(self.states))
+        rows = [] # List of rows
+        desc = [] # List of row info
+        for idx, t in enumerate(self.transitions):
+            trans_type, dep, act, dest_states, weights = t
+            total = sum(weights)
+            row = np.zeros(len(state_list))
+            for dest, w in zip(dest_states, weights):
+                prob = w / total if total != 0 else 0
+                row[state_list.index(dest)] = prob
+            if trans_type == "MDP":
+                desc.append(f"[{idx}] ({dep}, {act})\t")
+            else:
+                desc.append(f"[{idx}] ({dep})\t")
+            rows.append(row)
+        return rows, desc, state_list
+        
 # --------------------
 # USER INTERFACE
 
@@ -261,52 +285,67 @@ class PlotCanvas(FigureCanvas):
 # Main interface of the application
 class MainWindow(QMainWindow):
     def __init__(self):
+        # Initialize parent class
         super().__init__()
+        # Window settings
         self.setWindowTitle("MDP/MC Simulator")
         self.resize(800, 600)
+        # Initialize colorama for colored console output
         colorama_init()
+        # Model state variables
+        self.model = None  # Current loaded model
+        self.simulation_running = False  # Simulation state
+        self.current_state = "S0"  # Current (Initial) state in simulation
+        # Main canvas for graph visualization
         self.canvas = PlotCanvas(self, width=10, height=6, dpi=100)
         
-        self.loadButton = QPushButton("Load Model File")
-        self.loadButton.clicked.connect(self.load_file)
-        self.exampleButton = QPushButton("Use Example")
-        self.exampleButton.clicked.connect(self.load_example)
+        # Control buttons
         
-        self.simulateButton = QPushButton("Launch Simulation!")
+        # Load custom model
+        self.loadButton = QPushButton("Load Model File")  
+        self.loadButton.clicked.connect(self.load_file)
+        # Load example model
+        self.exampleButton = QPushButton("Use Example")  
+        self.exampleButton.clicked.connect(self.load_example)
+        # Start/stop simulation
+        self.simulateButton = QPushButton("Launch Simulation!")  
         self.simulateButton.setStyleSheet("background-color: lightgreen")
         self.simulateButton.clicked.connect(self.toggle_simulation)
-        
-        # QDoubleSpinBox pour définir le délai de simulation
+        # Print transition matrix
+        self.printMatrixButton = QPushButton("Print Matrix")  
+        self.printMatrixButton.clicked.connect(self.print_matrix)
+        # Simulation delay controls
         self.delayLabel = QLabel("Transition Delay :")
         self.delaySpinBox = QDoubleSpinBox()
         self.delaySpinBox.setRange(0.05, 5.0)
         self.delaySpinBox.setSingleStep(0.05)
         self.delaySpinBox.setValue(0.5)
         
-        hlayout = QHBoxLayout()
+        # Layout setup
+        
+        # Horizontal layout for controls
+        hlayout = QHBoxLayout()  
         hlayout.addWidget(self.loadButton)
         hlayout.addWidget(self.exampleButton)
         hlayout.addWidget(self.simulateButton)
+        hlayout.addWidget(self.printMatrixButton)
         hlayout.addWidget(self.delayLabel)
         hlayout.addWidget(self.delaySpinBox)
-        
+        # Vertical layout for main window
         layout = QVBoxLayout()
         layout.addLayout(hlayout)
         layout.addWidget(self.canvas)
+        # Set central widget
         central = QWidget()
         central.setLayout(layout)
         self.setCentralWidget(central)
-        
-        self.model = None  # modèle chargé
-        self.simulation_running = False
-        self.current_state = "S0"
 
     # Load model from MDP file
     def load_file(self):
         fname, _ = QFileDialog.getOpenFileName(self, "Open Model File", "", "MDP Files (*.mdp);;All Files (*)")
         if fname:
             self.process_file(fname)
-            
+
     # Load example model (ex.mdp)
     def load_example(self):
         self.process_file(DEFAULT_FILE)
@@ -327,12 +366,12 @@ class MainWindow(QMainWindow):
         walker = ParseTreeWalker()
         walker.walk(model, tree)
         # Check model validity
-        check(model, fname)
+        model.check(fname)
         # Plot model graph in canvas
         self.model = model
         self.current_state = "S0"
         self.canvas.plot_model(model)
-        
+
     # --------------------
     # SIMULATION FUNCTIONS
     
@@ -344,7 +383,7 @@ class MainWindow(QMainWindow):
 
     def start_simulation(self):
         if self.model is None:
-            print( Fore.LIGHTRED_EX + "No model loaded!" + Style.RESET_ALL)
+            print(Fore.LIGHTRED_EX + "No model loaded!" + Style.RESET_ALL)
             return
         self.simulation_running = True
         self.current_state = "S0"
@@ -382,6 +421,18 @@ class MainWindow(QMainWindow):
         self.canvas.plot_simulation_state(self.model, self.current_state, chosen_edge)
         delay = self.delaySpinBox.value()
         QTimer.singleShot(int(delay * 1000), self.simulate_step)
+
+    def print_matrix(self):
+        if self.model is None:
+            print(Fore.LIGHTRED_EX + "No model loaded!" + Style.RESET_ALL)
+            return
+        rows, desc, cols = self.model.get_matrix()
+        
+        print(Fore.LIGHTBLUE_EX + "\nTransition Matrix:" + Style.RESET_ALL)
+        print("Columns:\t", cols)
+        for ind, row in enumerate(rows):
+            print(desc[ind], row)
+        print()
 
 if __name__ == '__main__':
     app = QApplication(sys.argv)
