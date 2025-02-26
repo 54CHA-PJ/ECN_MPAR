@@ -381,7 +381,7 @@ class MainWindow(QMainWindow):
         self.current_state = "S0"
         self.simulateButton.setText("Stop Simulation")
         self.simulateButton.setStyleSheet("background-color: red")
-        print(f"[SIM] Simulation begins in state {self.current_state}")
+        print(f"\n[SIM] Simulation begins in state {self.current_state}")
         QTimer.singleShot(0, self.simulate_step)
 
     def stop_simulation(self):
@@ -395,15 +395,25 @@ class MainWindow(QMainWindow):
         if not self.simulation_running:
             return
         outgoing = []
-        # Save the accessible transitions from the current state
+        # Collect all outgoing transitions from the current state
         for t in self.model.transitions:
             if t[1] == self.current_state:
                 for dest in t[3]:
                     outgoing.append((t[0], t[1], t[2], dest))
+
+        # STOP if there are no outgoing transitions
         if not outgoing:
-            print(Fore.LIGHTYELLOW_EX + f"[SIM] No outgoing transitions from state {self.current_state}! Simulation end." + Style.RESET_ALL)
+            print(Fore.LIGHTYELLOW_EX + f"[SIM] State {self.current_state} has no transitions!" + Style.RESET_ALL)
             self.stop_simulation()
             return
+
+        # STOP if the state is in a loop
+        if len(outgoing) == 1 and outgoing[0][1] == outgoing[0][3]:
+            print(Fore.LIGHTYELLOW_EX + f"[SIM] State {self.current_state} is in a loop!" + Style.RESET_ALL)
+            self.stop_simulation()
+            return
+
+        # Otherwise, randomly choose an outgoing transition
         chosen_edge = random.choice(outgoing)
         if chosen_edge[0] == "MDP":
             print(f"[MDP] [{chosen_edge[2]}] {chosen_edge[1]} -> {chosen_edge[3]}")
