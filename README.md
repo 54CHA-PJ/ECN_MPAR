@@ -12,7 +12,7 @@ conda install antlr4-python3-runtime
 ### Création du Parser
 
 ```bash
-antlr4 gram.g4
+antlr4 -Dlanguage=Python3 -o . gram.g4
 ```
 
 ---

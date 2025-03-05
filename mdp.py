@@ -40,9 +40,21 @@ class gramPrintListener(gramListener):
         self.states = set()
         self.actions = set()
         self.transitions = []
+        
+        # Reward system
+        self.rewards = {}
+        self.warning_state_list = []
 
-    def enterDefstates(self, ctx):
-        self.states = {str(x) for x in ctx.ID()}
+    def enterDefstates(self, ctx: gramParser.DefstatesContext):
+        for sctx in ctx.statedef():
+            state_name = sctx.ID().getText()
+            if sctx.INT():
+                rew = int(sctx.INT().getText())
+            else:
+                rew = 0
+                self.warning_state_list.append(state_name)
+            self.states.add(state_name)
+            self.rewards[state_name] = rew
 
     def enterDefactions(self, ctx):
         self.actions = {str(x) for x in ctx.ID()}
@@ -63,6 +75,7 @@ class gramPrintListener(gramListener):
     def describe(self):
         print(Fore.LIGHTBLUE_EX + "-----------------------------------------------------" + Style.RESET_ALL)
         print(Fore.LIGHTBLUE_EX + "States: " + Style.RESET_ALL, self.states)
+        print(Fore.LIGHTBLUE_EX + "Rewards: " + Style.RESET_ALL, self.rewards)
         print(Fore.LIGHTBLUE_EX + "Actions: " + Style.RESET_ALL, self.actions)
         print(Fore.LIGHTBLUE_EX + "Transitions:" + Style.RESET_ALL)
         for t in self.transitions:
@@ -72,6 +85,8 @@ class gramPrintListener(gramListener):
     def validate(self):
         valid = True
         s0_exists = False
+        for warn in self.warning_state_list:
+            print(f"{Fore.YELLOW}[Warning]{Style.RESET_ALL} State {Fore.YELLOW}{warn}{Style.RESET_ALL} has no reward defined. Default to 0.")
         for t in self.transitions:
             if t[1] == "S0":
                 s0_exists = True
@@ -139,7 +154,37 @@ class gramPrintListener(gramListener):
                 desc.append(f"[{idx}] ({dep})\t")
             rows.append(row)
         return rows, desc, state_list
+    
+    def get_state_analysis(self, win_states = ["S0"]):
+        """ 
+        INPUT : 
+            - Win states (Defined by user or default as ["S0"])
+        OUTPUT : 
+            - Win states (Initial win states AND states that immediately lead to a win state)
+            - Lose states (States where you are stuck and will never reach a win state)
+            - Incertitude states (States where you can't immediately tell if you will reach a win state or a lose state)
+        """
+        states_win = win_states
+        states_lose = []
+        states_incertitude = []
         
+        # Find all the states that lead directly to WIN or are stuck in a loop
+        for t in self.transitions:
+            end_states = t[3]
+            # if all end states are win, then the departure state is also a win state
+            if all([s in states_win for s in end_states]):
+                states_win.append(t[1])
+            # if the end state is itself, then it is a lose state
+            if t[1] not in win_states and end_states == [t[1]]:
+                states_lose.append(t[1])
+                
+        # ALl the other states are in incertitude
+        for s in self.states:
+            if s not in states_win and s not in states_lose:
+                states_incertitude.append(s)
+        
+        return states_win, states_lose, states_incertitude
+
 # --------------------
 # USER INTERFACE
 

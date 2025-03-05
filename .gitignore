@@ -3,3 +3,6 @@
 *.gram
 *.java
 __pycache__/*
+
+gpt.cmd
+gpt.txt
