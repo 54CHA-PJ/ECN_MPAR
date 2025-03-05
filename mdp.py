@@ -38,14 +38,15 @@ class gramPrintListener(gramListener):
     """
     def __init__(self):
         super().__init__()
-        self.states = []       # Use list to preserve order
-        self.actions = []      # Use list to preserve order
-        self.transitions = []  # List of transitions (in order)
-        self.rewards = {}
-        self.warning_state_list = []  # States that had no reward defined
+        self.states = []        # List of states by order of appearance
+        self.actions = []       # List of actions by order of appearance
+        self.transitions = []   # List of transitions by order of appearance
+        self.rewards = {}       # Dictionary of rewards
 
     def enterDefstates(self, ctx: gramParser.DefstatesContext):
-        # Iterate over the sub-rule "statedef" (make sure your grammar defines it)
+        """ 
+        """
+        self.warning_state_list = []  # States that had no reward defined
         for sctx in ctx.statedef():
             state_name = sctx.ID().getText()
             if sctx.INT():
@@ -228,7 +229,37 @@ class gramPrintListener(gramListener):
 
         incertitude_states = [s for s in self.states if s not in win_states and s not in lose_states]
         return win_states, lose_states, incertitude_states
+    
+    def calcul_proba(self, win_set, doubt_set, transitions):
+        import numpy as np
+        n = len(doubt_set)
+        A = np.zeros((n, n))
+        b = np.zeros(n)
+        
+        # For each state in the doubt set...
+        for i, state in enumerate(doubt_set):
+            # Find transitions with departure equal to the current state.
+            # (Assuming each state appears at most once; if several exist, you could sum them.)
+            trans_for_state = [t for t in transitions if t[1] == state]
+            if not trans_for_state:
+                # No outgoing transition: leave row as zero (or handle as needed)
+                continue
+            # For simplicity, take the first transition found.
+            t = trans_for_state[0]
+            dest_states = t[3]  # list of destination states
+            weights = t[4]      # corresponding list of weights
+            total = sum(weights)
+            for dest, w in zip(dest_states, weights):
+                prob = w / total if total != 0 else 0
+                if dest in doubt_set:
+                    j = doubt_set.index(dest)
+                    A[i][j] += prob
+                elif dest in win_set:
+                    b[i] += prob
 
+        I_minus_A = np.eye(n) - A
+        y = np.linalg.solve(I_minus_A, b)
+        return y
 
 # --------------------
 # USER INTERFACE
@@ -370,14 +401,14 @@ class MainWindow(QMainWindow):
         colorama_init()
         
         # Control buttons
-        self.loadButton = QPushButton("Load Model File")  
+        self.loadButton = QPushButton("Load Model File")
         self.loadButton.clicked.connect(self.load_file)
-        self.exampleButton = QPushButton("Use Example")  
+        self.exampleButton = QPushButton("Use Example")
         self.exampleButton.clicked.connect(self.load_example)
-        self.simulateButton = QPushButton("Launch Simulation!")  
+        self.simulateButton = QPushButton("Launch Simulation!")
         self.simulateButton.setStyleSheet("background-color: lightgreen")
         self.simulateButton.clicked.connect(self.toggle_simulation)
-        self.printMatrixButton = QPushButton("Print Matrix")  
+        self.printMatrixButton = QPushButton("Print Matrix")
         self.printMatrixButton.clicked.connect(self.print_matrix)
         self.delayLabel = QLabel("Transition Delay :")
         self.delaySpinBox = QDoubleSpinBox()
@@ -385,14 +416,20 @@ class MainWindow(QMainWindow):
         self.delaySpinBox.setSingleStep(0.05)
         self.delaySpinBox.setValue(0.5)
         
+        # New Probability analysis button
+        self.probabilityButton = QPushButton("Probability analysis")
+        self.probabilityButton.clicked.connect(self.probability_analysis)
+        
         # Layout setup
-        hlayout = QHBoxLayout()  
+        hlayout = QHBoxLayout()
         hlayout.addWidget(self.loadButton)
         hlayout.addWidget(self.exampleButton)
         hlayout.addWidget(self.simulateButton)
         hlayout.addWidget(self.printMatrixButton)
         hlayout.addWidget(self.delayLabel)
         hlayout.addWidget(self.delaySpinBox)
+        hlayout.addWidget(self.probabilityButton)
+        
         layout = QVBoxLayout()
         layout.addLayout(hlayout)
         layout.addWidget(self.canvas)
@@ -401,7 +438,9 @@ class MainWindow(QMainWindow):
         self.setCentralWidget(central)
 
     def load_file(self):
-        fname, _ = QFileDialog.getOpenFileName(self, "Open Model File", "", "MDP Files (*.mdp);;All Files (*)")
+        fname, _ = QFileDialog.getOpenFileName(
+            self, "Open Model File", "", "MDP Files (*.mdp);;All Files (*)"
+        )
         if fname:
             self.process_file(fname)
 
@@ -423,13 +462,34 @@ class MainWindow(QMainWindow):
         self.model = model
         self.current_state = "S0"
         self.canvas.plot_model(model)
-        # Perform state analysis:
-        win, lose, incertitude = model.get_state_analysis()
+        # Optionally, perform state analysis here:
+        win, lose, incertitude = model.get_state_analysis(initial_win_states=["S0"])
         print(f"Win states: {win}\nLose states: {lose}\nIncertitude states: {incertitude}")
 
-    # --------------------
-    # SIMULATION FUNCTIONS
-    
+    def probability_analysis(self):
+        from PyQt5.QtWidgets import QInputDialog
+        if self.model is None:
+            print(Fore.LIGHTRED_EX + "No model loaded!" + Style.RESET_ALL)
+            return
+        # Open an input dialog to ask for win state(s) separated by commas.
+        text, ok = QInputDialog.getText(
+            self, "Win States Input", "Enter win state(s) separated by commas:"
+        )
+        if ok:
+            win_states = [s.strip() for s in text.split(",") if s.strip()]
+            win, lose, incertitude = self.model.get_state_analysis(initial_win_states=win_states)
+            print(f"Win states: {win}")
+            print(f"Lose states: {lose}")
+            print(f"Incertitude states: {incertitude}")
+            if incertitude:
+                proba = self.model.calcul_proba(win, incertitude, self.model.transitions)
+                result_str = "Probabilities for incertitude states:\n"
+                for state, p in zip(incertitude, proba):
+                    result_str += f"{state}: {p:.4f}\n"
+                print(result_str)
+            else:
+                print("No incertitude states found.")
+
     def toggle_simulation(self):
         if not self.simulation_running:
             self.start_simulation()
