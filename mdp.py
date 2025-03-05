@@ -26,26 +26,26 @@ DEFAULT_FILE = "ex.mdp"
 class gramPrintListener(gramListener):
     """ 
     Fields:
-    - states: set of states (strings)
-    - actions: set of actions (strings)
-    - transitions:
-        - type: "MDP" or "MC"
-        - dep: departure state
-        - act: action (if MDP)
-        - dest_states: list of destination states
-        - weights: list of weights
+      - states: list of states (strings) in the order they are defined.
+      - actions: list of actions (strings) in the order they are defined.
+      - rewards: dictionary mapping state -> reward (default 0 if not provided)
+      - transitions:
+          - type: "MDP" or "MC"
+          - dep: departure state
+          - act: action (if MDP)
+          - dest_states: list of destination states
+          - weights: list of weights
     """
     def __init__(self):
         super().__init__()
-        self.states = set()
-        self.actions = set()
-        self.transitions = []
-        
-        # Reward system
+        self.states = []       # Use list to preserve order
+        self.actions = []      # Use list to preserve order
+        self.transitions = []  # List of transitions (in order)
         self.rewards = {}
-        self.warning_state_list = []
+        self.warning_state_list = []  # States that had no reward defined
 
     def enterDefstates(self, ctx: gramParser.DefstatesContext):
+        # Iterate over the sub-rule "statedef" (make sure your grammar defines it)
         for sctx in ctx.statedef():
             state_name = sctx.ID().getText()
             if sctx.INT():
@@ -53,11 +53,12 @@ class gramPrintListener(gramListener):
             else:
                 rew = 0
                 self.warning_state_list.append(state_name)
-            self.states.add(state_name)
+            self.states.append(state_name)
             self.rewards[state_name] = rew
 
     def enterDefactions(self, ctx):
-        self.actions = {str(x) for x in ctx.ID()}
+        # Preserve the order in which actions appear.
+        self.actions = [str(x) for x in ctx.ID()]
 
     def enterTransact(self, ctx):
         ids = [str(x) for x in ctx.ID()]
@@ -99,7 +100,7 @@ class gramPrintListener(gramListener):
             # Check if a destination state is not declared
             for s in t[3]:
                 if s not in self.states:
-                    print(f"{Fore.YELLOW}[Warning]{Style.RESET_ALL} state {Fore.YELLOW}{s}{Style.RESET_ALL} not defined!")
+                    print(f"{Fore.YELLOW}[Warning]{Style.RESET_ALL} State {Fore.YELLOW}{s}{Style.RESET_ALL} not defined!")
             # Check if a weight is negative
             if any(z < 0 for z in t[4]):
                 print(f"{Fore.LIGHTRED_EX}[ERROR]{Style.RESET_ALL} Negative weights detected in transition {Fore.LIGHTRED_EX}{t}{Style.RESET_ALL}")
@@ -111,18 +112,13 @@ class gramPrintListener(gramListener):
                         print(f"{Fore.LIGHTRED_EX}[ERROR]{Style.RESET_ALL} Cannot have MDP and MC transitions in the same state {Fore.LIGHTRED_EX}({t[1]}){Style.RESET_ALL}")
                         valid = False
         # Check if S0 is defined somewhere
-        if not s0_exists:
+        if "S0" not in self.states:
             print(f"{Fore.LIGHTRED_EX}[ERROR]{Style.RESET_ALL} Initial state {Fore.LIGHTRED_EX}S0{Style.RESET_ALL} not defined! It is required for the simulation.")
             valid = False
-        # Return the validity of the model
         return valid
 
     def check(self, name):
-        """ Check model validity and print results
-        Args:
-            model (gramPrintListener): model to check
-            name (str): file name
-        """
+        """ Check model validity and print results. """
         print(Fore.LIGHTBLUE_EX + f"\nModel: {name}" + Style.RESET_ALL)
         self.describe()
         if not self.validate():
@@ -131,16 +127,15 @@ class gramPrintListener(gramListener):
         print(Fore.LIGHTGREEN_EX + "Model is valid!" + Style.RESET_ALL)
         
     def get_matrix(self):
-        """ Generate transition matrix
-        - MC : Basic line with the probabilities
-        - MDP : One line for each action, and the probabilities
-        Returns:
-            mat(numpy.ndarray): transition matrix
+        """ Generate transition matrix.
+            - For MC: a single row with probabilities.
+            - For MDP: one row per action.
         """
         import numpy as np
-        state_list = sorted(list(self.states))
-        rows = [] # List of rows
-        desc = [] # List of row info
+        # Use the states in the order they were defined.
+        state_list = self.states[:]  
+        rows = []   # List of rows (one per transition)
+        desc = []   # List of row info strings
         for idx, t in enumerate(self.transitions):
             trans_type, dep, act, dest_states, weights = t
             total = sum(weights)
@@ -154,41 +149,91 @@ class gramPrintListener(gramListener):
                 desc.append(f"[{idx}] ({dep})\t")
             rows.append(row)
         return rows, desc, state_list
-    
-    def get_state_analysis(self, win_states = ["S0"]):
-        """ 
-        INPUT : 
-            - Win states (Defined by user or default as ["S0"])
-        OUTPUT : 
-            - Win states (Initial win states AND states that immediately lead to a win state)
-            - Lose states (States where you are stuck and will never reach a win state)
-            - Incertitude states (States where you can't immediately tell if you will reach a win state or a lose state)
+
+    def get_state_analysis(self, initial_win_states=["S0"]):
         """
-        states_win = win_states
-        states_lose = []
-        states_incertitude = []
-        
-        # Find all the states that lead directly to WIN or are stuck in a loop
-        for t in self.transitions:
-            end_states = t[3]
-            # if all end states are win, then the departure state is also a win state
-            if all([s in states_win for s in end_states]):
-                states_win.append(t[1])
-            # if the end state is itself, then it is a lose state
-            if t[1] not in win_states and end_states == [t[1]]:
-                states_lose.append(t[1])
-                
-        # ALl the other states are in incertitude
+        INPUT : 
+        - initial_win_states (e.g., ["S0"])
+        OUTPUT : 
+        - win_states: initial win states AND states that, for every possible action/transition,
+                        all outcomes are win states (computed iteratively)
+        - lose_states: states where every outgoing transition (or for every available action)
+                        is a self-loop (or there are no outgoing transitions)
+        - incertitude_states: states not classified as win or lose
+        This function works for both MC and MDP transitions.
+        """
+        # Start with the given win states (preserving order)
+        win_states = initial_win_states[:]  
+        changed = True
+        while changed:
+            changed = False
+            for s in self.states:
+                if s in win_states:
+                    continue
+                # Get all transitions leaving state s
+                transitions_from_s = [t for t in self.transitions if t[1] == s]
+                if not transitions_from_s:
+                    continue  # no transitions: cannot be immediately winning
+
+                # For MC transitions: require that every outcome is already win.
+                mc_transitions = [t for t in transitions_from_s if t[0] == "MC"]
+                # For MDP transitions: for each distinct action, every outcome must be win.
+                mdp_transitions = [t for t in transitions_from_s if t[0] == "MDP"]
+
+                state_wins = True  # assume s is winning unless we find a counterexample
+
+                if mc_transitions:
+                    for t in mc_transitions:
+                        # t[3] holds the list of destination states
+                        if not t[3] or not all(dest in win_states for dest in t[3]):
+                            state_wins = False
+                            break
+
+                if mdp_transitions and state_wins:
+                    # Group transitions by action.
+                    actions = set(t[2] for t in mdp_transitions)
+                    for a in actions:
+                        trans_for_a = [t for t in mdp_transitions if t[2] == a]
+                        for t in trans_for_a:
+                            if not t[3] or not all(dest in win_states for dest in t[3]):
+                                state_wins = False
+                                break
+                        if not state_wins:
+                            break
+
+                if state_wins and (mc_transitions or mdp_transitions):
+                    win_states.append(s)
+                    changed = True
+
+        lose_states = []
+        # A state is losing if it has at least one outgoing transition and for every transition,
+        # the only outcome is itself.
         for s in self.states:
-            if s not in states_win and s not in states_lose:
-                states_incertitude.append(s)
-        
-        return states_win, states_lose, states_incertitude
+            # Skip states already marked as win.
+            if s in win_states:
+                continue
+            transitions_from_s = [t for t in self.transitions if t[1] == s]
+            if not transitions_from_s:
+                # No transitions => consider as losing.
+                lose_states.append(s)
+                continue
+            all_self_loops = True
+            for t in transitions_from_s:
+                # If a transition's outcomes are not exactly [s], then s is not losing.
+                if t[3] != [s]:
+                    all_self_loops = False
+                    break
+            if all_self_loops:
+                lose_states.append(s)
+
+        incertitude_states = [s for s in self.states if s not in win_states and s not in lose_states]
+        return win_states, lose_states, incertitude_states
+
 
 # --------------------
 # USER INTERFACE
 
-# Class for plotting the model
+# Class for plotting the model.
 class PlotCanvas(FigureCanvas):
     def __init__(self, parent=None, width=10, height=6, dpi=100):
         self.fig, self.ax = plt.subplots(figsize=(width, height), dpi=dpi)
@@ -199,14 +244,10 @@ class PlotCanvas(FigureCanvas):
     def show_welcome(self):
         self.ax.clear()
         self.ax.axis('off')
-        self.ax.text(
-            0.5, 0.6, "Welcome to the MC/MDP Simulator!",
-            ha='center', va='center', transform=self.ax.transAxes, fontsize=16
-        )
-        self.ax.text(
-            0.5, 0.4, "made by Sacha Cruz and Jun Leduc",
-            ha='center', va='center', transform=self.ax.transAxes, fontsize=12
-        )
+        self.ax.text(0.5, 0.6, "Welcome to the MC/MDP Simulator!",
+                     ha='center', va='center', transform=self.ax.transAxes, fontsize=16)
+        self.ax.text(0.5, 0.4, "made by Sacha Cruz and Jun Leduc",
+                     ha='center', va='center', transform=self.ax.transAxes, fontsize=12)
         self.draw()
 
     def plot_model(self, model):
@@ -239,11 +280,7 @@ class PlotCanvas(FigureCanvas):
         return G
 
     def draw_better_edges(self, G, pos):
-        """ Draw edges with better curves and labels
-        Args:
-            G (nx.Graph): graph of the model
-            pos (dict): positions of the nodes
-        """
+        """ Draw edges with curves and labels. """
         groups = {}
         for u, v, d in G.edges(data=True):
             groups.setdefault((u, v), []).append(d)
@@ -260,8 +297,7 @@ class PlotCanvas(FigureCanvas):
                     nx.draw_networkx_edges(
                         G, pos, edgelist=[(u, v)],
                         edge_color=[d['color']],
-                        connectionstyle=f'arc3, rad={0.2 + abs(cur)}', ax=self.ax
-                    )
+                        connectionstyle=f'arc3, rad={0.2 + abs(cur)}', ax=self.ax)
                     x, y = pos[u]
                     self.ax.text(x + cur, y + 0.22, d['label'], fontsize=10,
                                  color=d['color'], ha='center', va='center')
@@ -269,8 +305,7 @@ class PlotCanvas(FigureCanvas):
                     nx.draw_networkx_edges(
                         G, pos, edgelist=[(u, v)],
                         edge_color=[d['color']],
-                        connectionstyle=f'arc3, rad={cur}', ax=self.ax
-                    )
+                        connectionstyle=f'arc3, rad={cur}', ax=self.ax)
                     x1, y1 = pos[u]
                     x2, y2 = pos[v]
                     xm, ym = (x1 + x2) / 2, (y1 + y2) / 2
@@ -317,41 +352,33 @@ class PlotCanvas(FigureCanvas):
                 nx.draw_networkx_edges(
                     G, pos, edgelist=[(chosen_dep, chosen_dest)],
                     edge_color='red', width=3,
-                    connectionstyle=f'arc3, rad={cur}', ax=self.ax
-                )
+                    connectionstyle=f'arc3, rad={cur}', ax=self.ax)
         self.draw()
 
 # --------------------
 # MAIN INTERFACE
 
-# Main interface of the application
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
         self.setWindowTitle("MDP/MC Simulator")
         self.resize(800, 600)
         self.canvas = PlotCanvas(self, width=10, height=6, dpi=100)
-        self.model = None  # Current loaded model
-        self.simulation_running = False  # Simulation state
-        self.current_state = "S0"  # Current (Initial) state in simulation
+        self.model = None
+        self.simulation_running = False
+        self.current_state = "S0"
         colorama_init()
         
         # Control buttons
-        
-        # Load custom model
         self.loadButton = QPushButton("Load Model File")  
         self.loadButton.clicked.connect(self.load_file)
-        # Load example model
         self.exampleButton = QPushButton("Use Example")  
         self.exampleButton.clicked.connect(self.load_example)
-        # Start/stop simulation
         self.simulateButton = QPushButton("Launch Simulation!")  
         self.simulateButton.setStyleSheet("background-color: lightgreen")
         self.simulateButton.clicked.connect(self.toggle_simulation)
-        # Print transition matrix
         self.printMatrixButton = QPushButton("Print Matrix")  
         self.printMatrixButton.clicked.connect(self.print_matrix)
-        # Simulation delay controls
         self.delayLabel = QLabel("Transition Delay :")
         self.delaySpinBox = QDoubleSpinBox()
         self.delaySpinBox.setRange(0.05, 5.0)
@@ -359,8 +386,6 @@ class MainWindow(QMainWindow):
         self.delaySpinBox.setValue(0.5)
         
         # Layout setup
-        
-        # Horizontal layout for controls
         hlayout = QHBoxLayout()  
         hlayout.addWidget(self.loadButton)
         hlayout.addWidget(self.exampleButton)
@@ -368,46 +393,39 @@ class MainWindow(QMainWindow):
         hlayout.addWidget(self.printMatrixButton)
         hlayout.addWidget(self.delayLabel)
         hlayout.addWidget(self.delaySpinBox)
-        # Vertical layout for main window
         layout = QVBoxLayout()
         layout.addLayout(hlayout)
         layout.addWidget(self.canvas)
-        # Set central widget
         central = QWidget()
         central.setLayout(layout)
         self.setCentralWidget(central)
 
-    # Load model from MDP file
     def load_file(self):
         fname, _ = QFileDialog.getOpenFileName(self, "Open Model File", "", "MDP Files (*.mdp);;All Files (*)")
         if fname:
             self.process_file(fname)
 
-    # Load example model (ex.mdp)
     def load_example(self):
         self.process_file(DEFAULT_FILE)
 
-    # Convert file content to model 
     def process_file(self, fname):
-        # Open file
         with open(fname, 'r') as f:
             content = f.read()
-        # Parse content
         stream = InputStream(content)
         lexer = gramLexer(stream)
         tokens = CommonTokenStream(lexer)
         parser = gramParser(tokens)
         tree = parser.program()
-        # Build model
         model = gramPrintListener()
         walker = ParseTreeWalker()
         walker.walk(model, tree)
-        # Check model validity
         model.check(fname)
-        # Plot model graph in canvas
         self.model = model
         self.current_state = "S0"
         self.canvas.plot_model(model)
+        # Perform state analysis:
+        win, lose, incertitude = model.get_state_analysis()
+        print(f"Win states: {win}\nLose states: {lose}\nIncertitude states: {incertitude}")
 
     # --------------------
     # SIMULATION FUNCTIONS
@@ -440,25 +458,18 @@ class MainWindow(QMainWindow):
         if not self.simulation_running:
             return
         outgoing = []
-        # Collect all outgoing transitions from the current state
         for t in self.model.transitions:
             if t[1] == self.current_state:
                 for dest in t[3]:
                     outgoing.append((t[0], t[1], t[2], dest))
-
-        # STOP if there are no outgoing transitions
         if not outgoing:
             print(Fore.LIGHTYELLOW_EX + f"[SIM] State {self.current_state} has no transitions!" + Style.RESET_ALL)
             self.stop_simulation()
             return
-
-        # STOP if the state is in a loop
         if len(outgoing) == 1 and outgoing[0][1] == outgoing[0][3]:
             print(Fore.LIGHTYELLOW_EX + f"[SIM] State {self.current_state} is in a loop!" + Style.RESET_ALL)
             self.stop_simulation()
             return
-
-        # Otherwise, randomly choose an outgoing transition
         chosen_edge = random.choice(outgoing)
         if chosen_edge[0] == "MDP":
             print(f"[MDP] [{chosen_edge[2]}] {chosen_edge[1]} -> {chosen_edge[3]}")
@@ -474,7 +485,6 @@ class MainWindow(QMainWindow):
             print(Fore.LIGHTRED_EX + "No model loaded!" + Style.RESET_ALL)
             return
         rows, desc, cols = self.model.get_matrix()
-        
         print(Fore.LIGHTBLUE_EX + "\nTransition Matrix:" + Style.RESET_ALL)
         print("Columns:\t", cols)
         for ind, row in enumerate(rows):
