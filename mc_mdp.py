@@ -8,27 +8,21 @@ from gramParser import gramParser
 
 class gramPrintListener(gramListener):
     """ 
-    Fields:
-      - states: list of states (strings) in the order they are defined.
-      - actions: list of actions (strings) in the order they are defined.
-      - rewards: dictionary mapping state -> reward (default 0 if not provided)
-      - transitions:
-          - type: "MDP" or "MC"
-          - dep: departure state
-          - act: action (if MDP)
-          - dest_states: list of destination states
-          - weights: list of weights
+    Builds an internal model (states, actions, transitions, etc.)
+    and offers multiple probability analysis methods (symbolic, iterative, statistical).
     """
     def __init__(self):
         super().__init__()
-        self.states = []            # List of states in order of appearance
-        self.actions = []           # List of actions in order of appearance
-        self.transitions = []       # List of transitions (type, dep, act, dest_states, weights)
-        self.rewards = {}           # Dictionary of rewards for each state
+        self.states = []           
+        self.actions = []          
+        self.transitions = []      
+        self.rewards = {}          
+        self.warning_state_list = []
 
+    # --------------------
+    # GRAMMAR HOOKS
+    # --------------------
     def enterDefstates(self, ctx: gramParser.DefstatesContext):
-        """ Capture states and rewards """
-        self.warning_state_list = []    # States with no reward defined
         for sctx in ctx.statedef():
             state_name = sctx.ID().getText()
             if sctx.INT():
@@ -40,11 +34,9 @@ class gramPrintListener(gramListener):
             self.rewards[state_name] = rew
 
     def enterDefactions(self, ctx: gramParser.DefactionsContext):
-        """ Capture actions """
         self.actions = [str(x) for x in ctx.ID()]
 
     def enterTransact(self, ctx: gramParser.TransactContext):
-        """ Capture MDP transitions """
         ids = [str(x) for x in ctx.ID()]
         dep = ids.pop(0)
         act = ids.pop(0)
@@ -52,61 +44,44 @@ class gramPrintListener(gramListener):
         self.transitions.append(("MDP", dep, act, ids, weights))
 
     def enterTransnoact(self, ctx: gramParser.TransnoactContext):
-        """ Capture MC transitions """
         ids = [str(x) for x in ctx.ID()]
         dep = ids.pop(0)
         weights = [int(str(x)) for x in ctx.INT()]
         self.transitions.append(("MC", dep, None, ids, weights))
 
-    def describe(self):
-        """ Print a summary of the model """
-        print(Fore.LIGHTBLUE_EX + "-----------------------------------------------------" + Style.RESET_ALL)
-        print(Fore.LIGHTBLUE_EX + "States: " + Style.RESET_ALL, self.states)
-        print(Fore.LIGHTBLUE_EX + "Rewards: " + Style.RESET_ALL, self.rewards)
-        print(Fore.LIGHTBLUE_EX + "Actions: " + Style.RESET_ALL, self.actions)
-        print(Fore.LIGHTBLUE_EX + "Transitions:" + Style.RESET_ALL)
-        for t in self.transitions:
-            print(" -", t)
-        print(Fore.LIGHTBLUE_EX + "-----------------------------------------------------" + Style.RESET_ALL)
-
+    # --------------------
+    # VALIDATION
+    # --------------------
     def validate(self):
-        """ Check if the model is valid """
         valid = True
-        # Check if all states have a reward
+        # Warnings for states without explicit reward
         for warn_state in self.warning_state_list:
-            print(f"{Fore.YELLOW}[Warning]{Style.RESET_ALL} State {Fore.YELLOW}{warn_state}{Style.RESET_ALL} has no reward defined (default 0).")
-        # Check if S0 is defined
+            print(f"{Fore.YELLOW}[Warning]{Style.RESET_ALL} State {Fore.YELLOW}{warn_state}{Style.RESET_ALL} has no reward (default 0).")
+
+        # Must have S0 as an initial state
         if "S0" not in self.states:
-            print(f"{Fore.LIGHTRED_EX}[ERROR]{Style.RESET_ALL} No initial state S0 is defined!")
+            print(f"{Fore.LIGHTRED_EX}[ERROR]{Style.RESET_ALL} No initial state 'S0' found.")
             valid = False
-        # Check if all transitions are valid
-        for t in self.transitions:
-            trans_type, dep, act, dests, weights = t
-            # Check if action is valid
+
+        # Check transitions
+        for t_type, dep, act, dests, weights in self.transitions:
+            # Action declared?
             if act and act not in self.actions:
-                print(f"{Fore.YELLOW}[Warning]{Style.RESET_ALL} Action {Fore.YELLOW}{act}{Style.RESET_ALL} not declared! Adding to actions list.")
-                self.actions.append(act)
-            # Check if departure state is valid
-            if dep not in self.states:
-                print(f"{Fore.YELLOW}[Warning]{Style.RESET_ALL} Departure state {Fore.YELLOW}{dep}{Style.RESET_ALL} unknown. Adding to states list.")
-                self.states.append(dep)
-            # Check dests states are valid
-            for d in dests:
-                if d not in self.states:
-                    print(f"{Fore.YELLOW}[Warning]{Style.RESET_ALL} Destination state {Fore.YELLOW}{d}{Style.RESET_ALL} unknown. Adding to states list.")
-                    self.states.append(d)
-            # Check for negative weights
+                print(f"{Fore.YELLOW}[Warning]{Style.RESET_ALL} Action {Fore.YELLOW}{act}{Style.RESET_ALL} not declared.")
+            # Negative weights?
             if any(w < 0 for w in weights):
-                print(f"{Fore.LIGHTRED_EX}[ERROR]{Style.RESET_ALL} Negative weight in transition {t}")
+                print(f"{Fore.LIGHTRED_EX}[ERROR]{Style.RESET_ALL} Negative weight found in transition {dep} -> {dests}.")
                 valid = False
-            # Mixed MDP/MC for the same departure
-            if trans_type == "MC":
-                # Check if any MDP shares the same departure
+            # Mixed MDP/MC from the same departure?
+            if t_type == "MC":
                 for other in self.transitions:
                     if other[0] == "MDP" and other[1] == dep:
-                        print(f"{Fore.LIGHTRED_EX}[ERROR]{Style.RESET_ALL} Can't combine MC + MDP transitions for state {dep}")
+                        print(f"{Fore.LIGHTRED_EX}[ERROR]{Style.RESET_ALL} Mixed MC+MDP on state {dep}.")
                         valid = False
-        # If no error, it is valid (Even if there are warnings)
+            # Destination states unknown?
+            for d in dests:
+                if d not in self.states:
+                    print(f"{Fore.YELLOW}[Warning]{Style.RESET_ALL} Destination state {Fore.YELLOW}{d}{Style.RESET_ALL} unknown.")
         return valid
 
     def check(self, filename):
@@ -114,15 +89,24 @@ class gramPrintListener(gramListener):
         if not self.validate():
             print(Fore.LIGHTRED_EX + "Model is not valid! Quitting..." + Style.RESET_ALL)
             sys.exit(1)
-        else:
-            print(Fore.LIGHTGREEN_EX + "Model is valid." + Style.RESET_ALL)
+        print(Fore.LIGHTGREEN_EX + "Model is valid." + Style.RESET_ALL)
         self.describe()
 
+    def describe(self):
+        print(Fore.LIGHTBLUE_EX + "------------------ Model Description ----------------" + Style.RESET_ALL)
+        print(Fore.LIGHTBLUE_EX + "States:" + Style.RESET_ALL, self.states)
+        print(Fore.LIGHTBLUE_EX + "Rewards:" + Style.RESET_ALL, self.rewards)
+        print(Fore.LIGHTBLUE_EX + "Actions:" + Style.RESET_ALL, self.actions)
+        print(Fore.LIGHTBLUE_EX + "Transitions (type,dep,act,dest_states,weights):" + Style.RESET_ALL)
+        for t in self.transitions:
+            print("   ", t)
+        print(Fore.LIGHTBLUE_EX + "-----------------------------------------------------" + Style.RESET_ALL)
+
+    # --------------------
+    # MAIN ANALYSIS
+    # --------------------
     def get_matrix(self):
-        """
-        Build transition matrix rows, one row per transition, 
-        plus a descriptor and state_list (columns).
-        """
+        """ Returns a (rows, desc, state_list) describing transitions as numeric probabilities. """
         import numpy as np
         state_list = self.states[:]
         rows = []
@@ -130,20 +114,20 @@ class gramPrintListener(gramListener):
         for idx, (t_type, dep, act, dests, weights) in enumerate(self.transitions):
             total = sum(weights)
             row = np.zeros(len(state_list))
-            for dest, w in zip(dests, weights):
-                prob = w / total if total else 0
-                row[state_list.index(dest)] = prob
+            for d, w in zip(dests, weights):
+                prob = w/total if total else 0
+                row[state_list.index(d)] = prob
             label = f"[{idx}] ({dep}, {act})" if t_type == "MDP" else f"[{idx}] ({dep})"
             desc.append(label)
             rows.append(row)
         return rows, desc, state_list
 
     def get_state_analysis(self, initial_win_states=["S0"]):
-        """
-        Identify (win, lose, incertitude) states.
-        - Win: all transitions lead to already known win states
-        - Lose: no transitions OR all self loops
-        - Others: incertitude
+        """ 
+        Identify states as win/lose/incertitude.
+        A 'win' if all transitions lead to already known win states.
+        A 'lose' if no transitions or all self-loops.
+        Others incertitude.
         """
         win_states = initial_win_states[:]
         changed = True
@@ -154,30 +138,31 @@ class gramPrintListener(gramListener):
                     continue
                 out_t = [t for t in self.transitions if t[1] == s]
                 if not out_t:
-                    # no transitions => can't be immediate winning
+                    # no transitions => can't be an immediate winner
                     continue
+
                 # Check MC transitions => all destinations in win_states
-                mc_ok = all(all(dest in win_states for dest in t[3]) for t in out_t if t[0] == "MC")
+                mc_ok = all(all(d in win_states for d in t[3]) for t in out_t if t[0] == "MC")
                 if not mc_ok:
                     continue
+
                 # Check MDP transitions => for each distinct action, all destinations in win_states
-                mdp_t = [tt for tt in out_t if tt[0] == "MDP"]
+                mdp_t = [t for t in out_t if t[0] == "MDP"]
                 if mdp_t:
                     actions = set(tt[2] for tt in mdp_t)
                     mdp_ok = True
                     for a in actions:
                         same_action = [tt for tt in mdp_t if tt[2] == a]
-                        # If any dest is not in win_states => not OK
-                        if any(any(d not in win_states for d in trans[3]) for trans in same_action):
+                        # if any dest not in win => fail
+                        if any(any(dest not in win_states for dest in trans[3]) for trans in same_action):
                             mdp_ok = False
                             break
                     if not mdp_ok:
                         continue
-                # If we get here => s is a new win
+
                 win_states.append(s)
                 changed = True
 
-        # lose states
         lose_states = []
         for s in self.states:
             if s in win_states:
@@ -189,31 +174,44 @@ class gramPrintListener(gramListener):
         incertitude = [s for s in self.states if s not in win_states and s not in lose_states]
         return win_states, lose_states, incertitude
 
-    def calcul_proba_MC(self, win_set, doubt_set, transitions):
-        """Compute probabilities of eventually reaching a win state for a MC among the doubt_set states."""
+    # --------------------
+    # MULTIPLE PROBA METHODS
+    # --------------------
+
+    def proba_symbolic(self, win_set, doubt_set):
+        """ Symbolic approach for MC (already implemented). """
         import numpy as np
         n = len(doubt_set)
         A = np.zeros((n, n))
         b = np.zeros(n)
-
         for i, s in enumerate(doubt_set):
-            # transitions from s
-            out_t = [t for t in transitions if t[1] == s]
+            out_t = [t for t in self.transitions if t[1] == s]
             if not out_t:
-                # no transitions => row remains zero
                 continue
-            # We'll pick the first transition for simplicity
+            # We'll pick the first transition from s for MC
             trans_type, dep, act, dests, weights = out_t[0]
             total = sum(weights)
-            for dest, w in zip(dests, weights):
-                prob = w / total if total else 0
-                if dest in doubt_set:
-                    j = doubt_set.index(dest)
+            for d, w in zip(dests, weights):
+                prob = w/total if total else 0
+                if d in doubt_set:
+                    j = doubt_set.index(d)
                     A[i, j] += prob
-                elif dest in win_set:
+                elif d in win_set:
                     b[i] += prob
-
         I_minus_A = np.eye(n) - A
-        # Solve (I - A) * x = b
         x = np.linalg.solve(I_minus_A, b)
         return x
+
+    def proba_iterative(self, win_set, doubt_set):
+        """ Iterative approach (placeholder).
+            This should compute the same probabilities by iteration. """
+        import numpy as np
+        print("[Iterative] Not implemented yet. Returning dummy zeros.")
+        return np.zeros(len(doubt_set))
+
+    def proba_statistical(self, win_set, doubt_set, trials=10000):
+        """ Statistical approach (placeholder).
+            E.g. random simulation to estimate probabilities. """
+        import numpy as np
+        print("[Statistical] Not implemented yet. Returning dummy zeros.")
+        return np.zeros(len(doubt_set))

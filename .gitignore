@@ -6,3 +6,9 @@ __pycache__/*
 
 gpt.cmd
 gpt.txt
+
+gramLexer.py
+gramParser.py
+gramListener.py
+*.tokens
+*.interp
