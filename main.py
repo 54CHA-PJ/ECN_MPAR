@@ -3,11 +3,14 @@ import sys
 import random
 import networkx as nx
 from antlr4 import InputStream, CommonTokenStream, ParseTreeWalker
+import math
 
 # UI
 from colorama import Fore, Style, init as colorama_init
 import matplotlib
 import matplotlib.pyplot as plt
+import matplotlib.patches as patches
+import matplotlib.patheffects as PathEffects
 from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
 from PyQt5.QtCore import QTimer
 from PyQt5.QtWidgets import (
@@ -37,23 +40,95 @@ class PlotCanvas(FigureCanvas):
         self.ax.clear()
         self.ax.axis('off')
         self.ax.text(0.5, 0.6, "Welcome to the MC/MDP Simulator!",
-                     ha='center', va='center', transform=self.ax.transAxes, fontsize=16)
+                     ha='center', va='center', transform=self.ax.transAxes, fontsize=16,
+                     path_effects=[PathEffects.withStroke(linewidth=3, foreground="white")])
         self.ax.text(0.5, 0.4, "Made by Sacha Cruz and Jun Leduc",
-                     ha='center', va='center', transform=self.ax.transAxes, fontsize=12)
+                     ha='center', va='center', transform=self.ax.transAxes, fontsize=12,
+                     path_effects=[PathEffects.withStroke(linewidth=3, foreground="white")])
         self.draw()
+
+    def get_state_order(self, model):
+        """Extract states in the order they first appear in the transitions.
+           Assumes that the order of appearance reflects the declaration order.
+        """
+        state_order = []
+        for (t_type, dep, act, dests, weights) in model.transitions:
+            if dep not in state_order:
+                state_order.append(dep)
+            for dest in dests:
+                if dest not in state_order:
+                    state_order.append(dest)
+        return state_order
+
+    def hierarchical_layout(self, G, state_order, layer_distance=3):
+        """
+        Compute positions using a hierarchical layout (BFS from S0) to minimize edge overlaps.
+        Nodes are arranged in concentric circles based on their distance from S0.
+        Within each layer, nodes are sorted according to their declaration order.
+        """
+        # Determine the root: use S0 if available, otherwise the first declared state.
+        if "S0" in state_order:
+            root = "S0"
+        elif state_order:
+            root = state_order[0]
+        else:
+            return {}
+        pos = {}
+        # Compute shortest-path lengths from root.
+        lengths = nx.single_source_shortest_path_length(G, root)
+        # Group nodes by distance (layer)
+        layers = {}
+        for node, dist in lengths.items():
+            layers.setdefault(dist, []).append(node)
+        # Add unreachable nodes to an extra layer.
+        unreachable = [node for node in G.nodes() if node not in lengths]
+        if unreachable:
+            layers.setdefault(max(layers.keys()) + 1, []).extend(unreachable)
+        sorted_layers = sorted(layers.keys())
+        # Place the root at the center.
+        pos[root] = (0, 0)
+        for layer in sorted_layers:
+            if layer == 0:
+                continue
+            nodes = layers[layer]
+            # Sort nodes by their declaration order.
+            nodes.sort(key=lambda x: state_order.index(x) if x in state_order else x)
+            n = len(nodes)
+            angle_gap = 2 * math.pi / n if n > 0 else 0
+            radius = layer * layer_distance
+            for i, node in enumerate(nodes):
+                angle = i * angle_gap
+                pos[node] = (radius * math.cos(angle), radius * math.sin(angle))
+        return pos
+
+    def normalize_positions(self, pos, target_radius=3):
+        """
+        Scale all positions so that the furthest node from the origin
+        lies at target_radius. This ensures that the graph's size is consistent.
+        """
+        if not pos:
+            return pos
+        max_val = max(math.sqrt(x**2 + y**2) for (x, y) in pos.values())
+        if max_val == 0:
+            return pos
+        factor = target_radius / max_val
+        new_pos = {node: (x * factor, y * factor) for node, (x, y) in pos.items()}
+        return new_pos
 
     def plot_model(self, model):
         self.ax.clear()
         self.ax.axis('off')
         G = self.build_graph(model)
-        pos = nx.spring_layout(G, seed=0)
+        state_order = self.get_state_order(model)
+        pos = self.hierarchical_layout(G, state_order)
+        pos = self.normalize_positions(pos, target_radius=3)
         nx.draw_networkx_nodes(G, pos, node_color='lightgray', ax=self.ax)
         nx.draw_networkx_labels(G, pos, ax=self.ax)
         self.draw_better_edges(G, pos)
         self.draw()
 
     def build_graph(self, model):
-        """ Build the model as a directed graph. """
+        """Build the model as a directed graph."""
         G = nx.MultiDiGraph()
         for (t_type, dep, act, dests, weights) in model.transitions:
             total = sum(weights)
@@ -65,7 +140,11 @@ class PlotCanvas(FigureCanvas):
         return G
 
     def draw_better_edges(self, G, pos):
-        """ Draw edges with small arcs + labels. """
+        """
+        Draw edges with small arcs and labels with a white contour.
+        For non-loop edges, the label is placed closer to the source node.
+        For self-loop edges, a fixed minimal arc is used (without drawing an extra circle).
+        """
         groups = {}
         for u, v, d in G.edges(data=True):
             groups.setdefault((u, v), []).append(d)
@@ -73,37 +152,50 @@ class PlotCanvas(FigureCanvas):
         opp = {(u, v) for (u, v) in groups if (v, u) in groups}
 
         for (u, v), eds in groups.items():
-            offs = [((i - (len(eds) - 1) / 2) * base_offset) for i in range(len(eds))]
-            adjust = ((u, v) in opp) and (u > v)
-            for off, d in zip(offs, eds):
-                cur = -off if d.get('arrow_type') == "MC" else off
-                if adjust:
-                    cur += base_offset if cur >= 0 else -base_offset
-                if u == v:
+            if u == v:
+
+                fixed_curvature = 0.3  
+                for d in eds:
                     nx.draw_networkx_edges(
                         G, pos, edgelist=[(u, v)],
                         edge_color=[d['color']],
-                        connectionstyle=f'arc3, rad={0.2 + abs(cur)}', ax=self.ax
+                        connectionstyle=f'arc3, rad={fixed_curvature}',
+                        arrows=True, arrowstyle='-|>', arrowsize=15,
+                        ax=self.ax
                     )
                     x, y = pos[u]
-                    self.ax.text(x + cur, y + 0.22, d['label'], fontsize=10,
-                                 color=d['color'], ha='center', va='center')
-                else:
+                    self.ax.text(x, y + fixed_curvature, "⟳ " + d['label'], fontsize=7,
+                                 color=d['color'], ha='center', va='center',
+                                 path_effects=[PathEffects.withStroke(linewidth=2, foreground="white")])
+
+            else:
+                # --- Non-loop edges ---
+                offs = [((i - (len(eds) - 1) / 2) * base_offset) for i in range(len(eds))]
+                adjust = ((u, v) in opp) and (u > v)
+                for off, d in zip(offs, eds):
+                    cur = -off if d.get('arrow_type') == "MC" else off
+                    if adjust:
+                        cur += base_offset if cur >= 0 else -base_offset
                     nx.draw_networkx_edges(
                         G, pos, edgelist=[(u, v)],
                         edge_color=[d['color']],
+                        arrows=True, arrowstyle='-|>', arrowsize=15,
                         connectionstyle=f'arc3, rad={cur}', ax=self.ax
                     )
                     x1, y1 = pos[u]
                     x2, y2 = pos[v]
-                    xm, ym = (x1 + x2) / 2, (y1 + y2) / 2
+                    # Place label closer to the source (using t = 0.3 along the edge)
+                    t = 0.3
+                    xm = x1 + t * (x2 - x1)
+                    ym = y1 + t * (y2 - y1)
                     dx, dy = x2 - x1, y2 - y1
-                    dist = (dx**2 + dy**2)**0.5 or 1
+                    dist = math.sqrt(dx**2 + dy**2) or 1
                     perp = (dy/dist, -dx/dist)
-                    self.ax.text(xm + cur*0.5*perp[0], ym + cur*0.5*perp[1],
-                                 d['label'], fontsize=10, color=d['color'],
-                                 ha='center', va='center')
-
+                    self.ax.text(xm + cur * perp[0], ym + cur * perp[1],
+                                 d['label'], fontsize=7, color=d['color'],
+                                 ha='center', va='center',
+                                 path_effects=[PathEffects.withStroke(linewidth=3, foreground="white")])
+    
     def plot_simulation_state(self, model, current_state, chosen_edge=None):
         """
         Redraws the model and highlights one edge (chosen_edge) with the same arc offset
@@ -112,28 +204,23 @@ class PlotCanvas(FigureCanvas):
         self.ax.clear()
         self.ax.axis('off')
         G = self.build_graph(model)
-        pos = nx.spring_layout(G, seed=0)
-
-        # Mark the current state in red, others in lightgray
+        state_order = self.get_state_order(model)
+        pos = self.hierarchical_layout(G, state_order)
+        pos = self.normalize_positions(pos, target_radius=3)
+        # Mark the current state in red; all others in lightgray.
         node_colors = ['red' if n == current_state else 'lightgray' for n in G.nodes()]
         nx.draw_networkx_nodes(G, pos, node_color=node_colors, ax=self.ax)
         nx.draw_networkx_labels(G, pos, ax=self.ax)
-
-        # Draw the normal edges first
         self.draw_better_edges(G, pos)
-
-        # Highlight the chosen edge
         if chosen_edge is not None:
             (t_type, dep, act, dest) = chosen_edge
             if (dep, dest) in G.edges():
-                # Same approach used in draw_better_edges
                 groups = {}
                 for u, v, d in G.edges(data=True):
                     groups.setdefault((u, v), []).append(d)
                 if (dep, dest) in groups:
                     eds = groups[(dep, dest)]
                     base_offset = 0.33
-                    # The offset for each edge among multiple edges
                     offs = [((i - (len(eds) - 1) / 2) * base_offset) for i in range(len(eds))]
                     opp = (dest, dep) in groups
                     adjust = (opp and dep > dest)
@@ -146,12 +233,9 @@ class PlotCanvas(FigureCanvas):
                     cur = -off if t_type == "MC" else off
                     if adjust:
                         cur += base_offset if cur >= 0 else -base_offset
-                    # Use the same color as the original edge:
                     chosen_color = eds[index].get('color', 'red')
-                    # Draw the new edge
                     nx.draw_networkx_edges(
-                        G,
-                        pos,
+                        G, pos,
                         edgelist=[(dep, dest)],
                         edge_color=chosen_color,
                         width=3,

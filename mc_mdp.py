@@ -54,10 +54,10 @@ class gramPrintListener(gramListener):
 
     def validate(self):
         valid = True
-        # [WARNING] for states without explicit reward
-        for warn_state in self.warning_state_list:
-            print(f"{Fore.YELLOW}[Warning]{Style.RESET_ALL} State {Fore.YELLOW}{warn_state}{Style.RESET_ALL} has no reward (default 0).")
-            self.rewards[warn_state] = 0
+        # [ERROR] Must have S0 as an initial state
+        if "S0" not in self.states:
+            print(f"{Fore.LIGHTRED_EX}[ERROR]{Style.RESET_ALL} No initial state 'S0' found.")
+            valid = False
         # Check transitions
         for t_type, dep, act, dests, weights in self.transitions:
             # [WARNING] Action declared?
@@ -79,10 +79,10 @@ class gramPrintListener(gramListener):
                     if other[0] == "MDP" and other[1] == dep:
                         print(f"{Fore.LIGHTRED_EX}[ERROR]{Style.RESET_ALL} Mixed MC+MDP on state {dep}.")
                         valid = False
-        # [ERROR] Must have S0 as an initial state
-        if "S0" not in self.states:
-            print(f"{Fore.LIGHTRED_EX}[ERROR]{Style.RESET_ALL} No initial state 'S0' found.")
-            valid = False
+        # [WARNING] for states without explicit reward
+        for warn_state in self.warning_state_list:
+            print(f"{Fore.YELLOW}[Warning]{Style.RESET_ALL} State {Fore.YELLOW}{warn_state}{Style.RESET_ALL} has no reward (default 0).")
+            self.rewards[warn_state] = 0
         return valid
 
     def check(self, filename):
