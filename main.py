@@ -1,31 +1,29 @@
 # main.py
 import sys
 import random
+import networkx as nx
+from antlr4 import InputStream, CommonTokenStream, ParseTreeWalker
+
+# UI
+from colorama import Fore, Style, init as colorama_init
 import matplotlib
 import matplotlib.pyplot as plt
-import networkx as nx
-
+from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
+from PyQt5.QtCore import QTimer
 from PyQt5.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QPushButton, QFileDialog, QDoubleSpinBox, QLabel, QInputDialog,
     QDialog, QDialogButtonBox, QVBoxLayout, QComboBox
 )
-from PyQt5.QtCore import QTimer
-from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
+matplotlib.use('Qt5Agg')
 
-from colorama import Fore, Style, init as colorama_init
-from antlr4 import InputStream, CommonTokenStream, ParseTreeWalker
-
-# Grammar files
+# Local imports
 from gramLexer import gramLexer
 from gramParser import gramParser
-
-# Our code from mc_mdp.py
 from mc_mdp import gramPrintListener
 
-matplotlib.use('Qt5Agg')
+# Example file
 DEFAULT_FILE = "ex.mdp"
-
 
 class PlotCanvas(FigureCanvas):
     """For visualizing the model graph."""
@@ -40,7 +38,7 @@ class PlotCanvas(FigureCanvas):
         self.ax.axis('off')
         self.ax.text(0.5, 0.6, "Welcome to the MC/MDP Simulator!",
                      ha='center', va='center', transform=self.ax.transAxes, fontsize=16)
-        self.ax.text(0.5, 0.4, "made by Sacha Cruz and Jun Leduc",
+        self.ax.text(0.5, 0.4, "Made by Sacha Cruz and Jun Leduc",
                      ha='center', va='center', transform=self.ax.transAxes, fontsize=12)
         self.draw()
 
@@ -124,45 +122,33 @@ class PlotCanvas(FigureCanvas):
         # Draw the normal edges first
         self.draw_better_edges(G, pos)
 
-        # Now highlight the chosen edge with the same curvature offset
+        # Highlight the chosen edge
         if chosen_edge is not None:
             (t_type, dep, act, dest) = chosen_edge
             if (dep, dest) in G.edges():
-                # We replicate the same approach used in draw_better_edges:
-                # group edges by (u,v), find the correct one among multiple edges, etc.
+                # Same approach used in draw_better_edges
                 groups = {}
                 for u, v, d in G.edges(data=True):
                     groups.setdefault((u, v), []).append(d)
-
                 if (dep, dest) in groups:
                     eds = groups[(dep, dest)]
                     base_offset = 0.33
-                    # The offset for each edge among multiple edges from dep->dest
+                    # The offset for each edge among multiple edges
                     offs = [((i - (len(eds) - 1) / 2) * base_offset) for i in range(len(eds))]
-
-                    # If (dep,dest) is also in the reversed set, we do the "adjust" trick
                     opp = (dest, dep) in groups
                     adjust = (opp and dep > dest)
-
-                    # We'll choose the index of the edge that matches t_type in arrow_type
-                    # (and optionally the same action, if you want a more precise match).
                     index = 0
                     for i, d in enumerate(eds):
-                        # If there's only one, or if we don't care about multiple MDP edges,
-                        # we just pick the first that matches arrow_type. 
-                        # (If you want to match the action name, you can do so as well.)
                         if d.get('arrow_type') == t_type:
                             index = i
                             break
-
                     off = offs[index]
                     cur = -off if t_type == "MC" else off
                     if adjust:
                         cur += base_offset if cur >= 0 else -base_offset
-
                     # Use the same color as the original edge:
-                    chosen_color = eds[index].get('color', 'red')  # default to red if missing
-
+                    chosen_color = eds[index].get('color', 'red')
+                    # Draw the new edge
                     nx.draw_networkx_edges(
                         G,
                         pos,
@@ -172,7 +158,6 @@ class PlotCanvas(FigureCanvas):
                         connectionstyle=f'arc3, rad={cur}',
                         ax=self.ax
                     )
-
         self.draw()
 
 class MainWindow(QMainWindow):
@@ -186,36 +171,45 @@ class MainWindow(QMainWindow):
         self.current_state = "S0"
         colorama_init()
 
-        # Control buttons
+        # Load MDP file
         self.loadButton = QPushButton("Load Model File")
         self.loadButton.clicked.connect(self.load_file)
+        
+        # Load example file
         self.exampleButton = QPushButton("Use Example")
         self.exampleButton.clicked.connect(self.load_example)
+
+        # Print matrix 
+        self.printMatrixButton = QPushButton("Print Matrix")
+        self.printMatrixButton.clicked.connect(self.print_matrix)
+
+        # Probability analysis 
+        self.probabilityButton = QPushButton("Probability analysis")
+        self.probabilityButton.clicked.connect(self.probability_analysis)
+    
+        # Simulation
         self.simulateButton = QPushButton("Launch Simulation!")
         self.simulateButton.setStyleSheet("background-color: lightgreen")
         self.simulateButton.clicked.connect(self.toggle_simulation)
-        self.printMatrixButton = QPushButton("Print Matrix")
-        self.printMatrixButton.clicked.connect(self.print_matrix)
+        
+        # Input for simulation speed
         self.delayLabel = QLabel("Transition Delay :")
         self.delaySpinBox = QDoubleSpinBox()
         self.delaySpinBox.setRange(0.05, 5.0)
         self.delaySpinBox.setSingleStep(0.05)
         self.delaySpinBox.setValue(0.5)
 
-        # Probability analysis button
-        self.probabilityButton = QPushButton("Probability analysis")
-        self.probabilityButton.clicked.connect(self.probability_analysis)
-
         # Layout setup
         hlayout = QHBoxLayout()
         hlayout.addWidget(self.loadButton)
         hlayout.addWidget(self.exampleButton)
-        hlayout.addWidget(self.simulateButton)
         hlayout.addWidget(self.printMatrixButton)
+        hlayout.addWidget(self.probabilityButton)
         hlayout.addWidget(self.delayLabel)
         hlayout.addWidget(self.delaySpinBox)
-        hlayout.addWidget(self.probabilityButton)
+        hlayout.addWidget(self.simulateButton)
 
+        # Main layout
         layout = QVBoxLayout()
         layout.addLayout(hlayout)
         layout.addWidget(self.canvas)
@@ -280,9 +274,7 @@ class MainWindow(QMainWindow):
         method, ok2 = QInputDialog.getItem(
             self, "Probability Method",
             "Which method ?",
-            method_options,
-            0,  
-            False  # user cannot type a custom item
+            method_options, 0, False
         )
         if not ok2:
             return 
@@ -319,7 +311,7 @@ class MainWindow(QMainWindow):
         self.current_state = "S0"
         self.simulateButton.setText("Stop Simulation")
         self.simulateButton.setStyleSheet("background-color: red")
-        print(f"[SIM] Starting in state {self.current_state}")
+        print(f"\n[SIM] Starting in state {self.current_state}")
         QTimer.singleShot(0, self.simulate_step)
 
     def stop_simulation(self):
@@ -330,31 +322,32 @@ class MainWindow(QMainWindow):
         print("[SIM] Simulation stopped.")
 
     def simulate_step(self):
+        # STOP if the simulation is stopped
         if not self.simulation_running:
             return
-        # Gather all possible next states from current
+        # Look at the outgoing transitions
         outgoing = []
         for t in self.model.transitions:
             if t[1] == self.current_state:
                 for dest in t[3]:
                     outgoing.append((t[0], t[1], t[2], dest))
+        # STOP if it's stucked
         if not outgoing:
             print(f"[SIM] No transitions from {self.current_state}, stopping.")
             self.stop_simulation()
             return
-        # if there's exactly one and it's self-loop => infinite loop => stop
+        # STOP if it's a loop
         if len(outgoing) == 1 and outgoing[0][3] == self.current_state:
             print(f"[SIM] {self.current_state} is in a loop => stopping.")
             self.stop_simulation()
             return
-        # choose randomly among outgoing
+        # Choose a random transition
         chosen_edge = random.choice(outgoing)
         t_type, dep, act, dest = chosen_edge
         if t_type == "MDP":
-            print(f"[MDP] {dep} --{act}--> {dest}")
+            print(f"[MDP] {dep} -{act}-> {dest}")
         else:
-            print(f"[MC] {dep} --> {dest}")
-
+            print(f"[MC]  {dep} ---> {dest}")
         self.current_state = dest
         self.canvas.plot_simulation_state(self.model, self.current_state, chosen_edge)
         delay = self.delaySpinBox.value()
@@ -371,6 +364,8 @@ class MainWindow(QMainWindow):
             print(d, row)
         print(Fore.LIGHTBLUE_EX + "-----------------------------------------------------" + Style.RESET_ALL)
 
+# --------------------
+# Main
 
 if __name__ == '__main__':
     app = QApplication(sys.argv)
