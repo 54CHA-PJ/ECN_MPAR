@@ -107,28 +107,73 @@ class PlotCanvas(FigureCanvas):
                                  ha='center', va='center')
 
     def plot_simulation_state(self, model, current_state, chosen_edge=None):
+        """
+        Redraws the model and highlights one edge (chosen_edge) with the same arc offset
+        and color that was used in draw_better_edges.
+        """
         self.ax.clear()
         self.ax.axis('off')
         G = self.build_graph(model)
         pos = nx.spring_layout(G, seed=0)
+
+        # Mark the current state in red, others in lightgray
         node_colors = ['red' if n == current_state else 'lightgray' for n in G.nodes()]
         nx.draw_networkx_nodes(G, pos, node_color=node_colors, ax=self.ax)
         nx.draw_networkx_labels(G, pos, ax=self.ax)
+
+        # Draw the normal edges first
         self.draw_better_edges(G, pos)
 
+        # Now highlight the chosen edge with the same curvature offset
         if chosen_edge is not None:
             (t_type, dep, act, dest) = chosen_edge
             if (dep, dest) in G.edges():
-                # find correct arc offset
-                base_offset = 0.33
-                nx.draw_networkx_edges(
-                    G, pos, edgelist=[(dep, dest)],
-                    edge_color='red', width=3,
-                    connectionstyle=f'arc3, rad={base_offset if t_type=="MDP" else -base_offset}',
-                    ax=self.ax
-                )
-        self.draw()
+                # We replicate the same approach used in draw_better_edges:
+                # group edges by (u,v), find the correct one among multiple edges, etc.
+                groups = {}
+                for u, v, d in G.edges(data=True):
+                    groups.setdefault((u, v), []).append(d)
 
+                if (dep, dest) in groups:
+                    eds = groups[(dep, dest)]
+                    base_offset = 0.33
+                    # The offset for each edge among multiple edges from dep->dest
+                    offs = [((i - (len(eds) - 1) / 2) * base_offset) for i in range(len(eds))]
+
+                    # If (dep,dest) is also in the reversed set, we do the "adjust" trick
+                    opp = (dest, dep) in groups
+                    adjust = (opp and dep > dest)
+
+                    # We'll choose the index of the edge that matches t_type in arrow_type
+                    # (and optionally the same action, if you want a more precise match).
+                    index = 0
+                    for i, d in enumerate(eds):
+                        # If there's only one, or if we don't care about multiple MDP edges,
+                        # we just pick the first that matches arrow_type. 
+                        # (If you want to match the action name, you can do so as well.)
+                        if d.get('arrow_type') == t_type:
+                            index = i
+                            break
+
+                    off = offs[index]
+                    cur = -off if t_type == "MC" else off
+                    if adjust:
+                        cur += base_offset if cur >= 0 else -base_offset
+
+                    # Use the same color as the original edge:
+                    chosen_color = eds[index].get('color', 'red')  # default to red if missing
+
+                    nx.draw_networkx_edges(
+                        G,
+                        pos,
+                        edgelist=[(dep, dest)],
+                        edge_color=chosen_color,
+                        width=3,
+                        connectionstyle=f'arc3, rad={cur}',
+                        ax=self.ax
+                    )
+
+        self.draw()
 
 class MainWindow(QMainWindow):
     def __init__(self):
@@ -178,9 +223,9 @@ class MainWindow(QMainWindow):
         central.setLayout(layout)
         self.setCentralWidget(central)
 
-    # -------------------------------------------------------------------------
+    # --------------------
     # File loading
-    # -------------------------------------------------------------------------
+
     def load_file(self):
         fname, _ = QFileDialog.getOpenFileName(
             self, "Open Model File", "", "MDP Files (*.mdp);;All Files (*)"
@@ -207,65 +252,59 @@ class MainWindow(QMainWindow):
         self.current_state = "S0"
         self.canvas.plot_model(model)
 
-    # -------------------------------------------------------------------------
+    # --------------------
     # Probability analysis
-    # -------------------------------------------------------------------------
     
     def probability_analysis(self):
+        
+        # If no model is loaded
         if not self.model:
             print(Fore.LIGHTRED_EX + "No model loaded!" + Style.RESET_ALL)
             return
 
-        # 1) Prompt the user for win states
-        text, ok = QInputDialog.getText(
-            self, "Win States", "Enter win state(s), comma-separated:"
-        )
+        # 1. Prompt the user for win states
+        text, ok = QInputDialog.getText( self, "Win States", "Enter win state(s), separate using \\',\\' :" )
         if not ok or not text.strip():
-            return  # user canceled or gave empty input
+            return 
         win_states = [s.strip() for s in text.split(",") if s.strip()]
 
-        # 2) Compute state analysis
+        # 2. Compute state analysis
         w, l, inc = self.model.get_state_analysis(win_states)
-        print(f"Win States: {w}")
-        print(f"Lose States: {l}")
-        print(f"Incertitude States: {inc}")
+        print(Fore.LIGHTRED_EX + "\n-------------- Probability Calculation --------------" + Style.RESET_ALL)
+        print(Fore.LIGHTRED_EX + f"Win States :  {Style.RESET_ALL}{w}")
+        print(Fore.LIGHTRED_EX + f"Lose States : {Style.RESET_ALL}{l}")
+        print(Fore.LIGHTRED_EX + f"Incertitude : {Style.RESET_ALL}{inc}")
 
-        # Even if inc is empty, we still ask the user which method they'd like,
-        # in case you want consistent behavior. You can skip it if you prefer.
-        
-        # 3) Let user choose which method
+        # 3. Let user choose which method
         method_options = ["Symbolic", "Iterative", "Statistical"]
         method, ok2 = QInputDialog.getItem(
             self, "Probability Method",
-            "Which method do you want to use?",
+            "Which method ?",
             method_options,
-            0,  # default index
+            0,  
             False  # user cannot type a custom item
         )
         if not ok2:
-            return  # user canceled
-
-        # 4) If there are no incertitude states, just print a message and stop
+            return 
         if not inc:
-            print("No incertitude states => nothing to compute, but you chose:", method)
+            print("\n[PROBA] No incertitude states, no computation needed.")
             return
 
-        # 5) Otherwise, call the chosen method
         if method == "Symbolic":
             probs = self.model.proba_symbolic(w, inc)
         elif method == "Iterative":
             probs = self.model.proba_iterative(w, inc)
-        else:  # "Statistical"
+        else: 
             probs = self.model.proba_statistical(w, inc)
 
-        # 6) Print resulting probabilities
-        print(f"Probability analysis with {method} method =>")
+        print(Fore.LIGHTMAGENTA_EX + f"Method : {Fore.LIGHTYELLOW_EX}{method}" + Style.RESET_ALL)
         for st, val in zip(inc, probs):
-            print(f"   {st}: {val:.4f}")
+            print(f"   - {Fore.LIGHTYELLOW_EX}{st}{Style.RESET_ALL} : {val:.4f}")
+        print(Fore.LIGHTRED_EX + "-----------------------------------------------------" + Style.RESET_ALL)
 
-    # -------------------------------------------------------------------------
+    # --------------------
     # Simulation
-    # -------------------------------------------------------------------------
+
     def toggle_simulation(self):
         if not self.simulation_running:
             self.start_simulation()
@@ -321,18 +360,16 @@ class MainWindow(QMainWindow):
         delay = self.delaySpinBox.value()
         QTimer.singleShot(int(delay * 1000), self.simulate_step)
 
-    # -------------------------------------------------------------------------
-    # Print matrix
-    # -------------------------------------------------------------------------
     def print_matrix(self):
         if not self.model:
             print(Fore.LIGHTRED_EX + "No model loaded!" + Style.RESET_ALL)
             return
         rows, desc, cols = self.model.get_matrix()
-        print("\nTransition Matrix (one row per transition):")
-        print("Columns =>", cols)
+        print(Fore.LIGHTBLUE_EX + "\n----------------- Transition Matrix -----------------" + Style.RESET_ALL)
+        print("Columns :", cols)
         for d, row in zip(desc, rows):
             print(d, row)
+        print(Fore.LIGHTBLUE_EX + "-----------------------------------------------------" + Style.RESET_ALL)
 
 
 if __name__ == '__main__':

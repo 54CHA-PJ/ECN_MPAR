@@ -21,7 +21,7 @@ class gramPrintListener(gramListener):
 
     # --------------------
     # GRAMMAR HOOKS
-    # --------------------
+
     def enterDefstates(self, ctx: gramParser.DefstatesContext):
         for sctx in ctx.statedef():
             state_name = sctx.ID().getText()
@@ -51,7 +51,7 @@ class gramPrintListener(gramListener):
 
     # --------------------
     # VALIDATION
-    # --------------------
+
     def validate(self):
         valid = True
         # Warnings for states without explicit reward
@@ -93,18 +93,18 @@ class gramPrintListener(gramListener):
         self.describe()
 
     def describe(self):
-        print(Fore.LIGHTBLUE_EX + "------------------ Model Description ----------------" + Style.RESET_ALL)
-        print(Fore.LIGHTBLUE_EX + "States:" + Style.RESET_ALL, self.states)
-        print(Fore.LIGHTBLUE_EX + "Rewards:" + Style.RESET_ALL, self.rewards)
-        print(Fore.LIGHTBLUE_EX + "Actions:" + Style.RESET_ALL, self.actions)
-        print(Fore.LIGHTBLUE_EX + "Transitions (type,dep,act,dest_states,weights):" + Style.RESET_ALL)
+        print(Fore.LIGHTBLUE_EX + "\n------------------ Model Description ----------------" + Style.RESET_ALL)
+        print(Fore.LIGHTBLUE_EX + "States  :" + Style.RESET_ALL, self.states)
+        print(Fore.LIGHTBLUE_EX + "Rewards :" + Style.RESET_ALL, self.rewards)
+        print(Fore.LIGHTBLUE_EX + "Actions :" + Style.RESET_ALL, self.actions)
+        print(Fore.LIGHTBLUE_EX + "Transitions :" + Style.RESET_ALL)
         for t in self.transitions:
             print("   ", t)
         print(Fore.LIGHTBLUE_EX + "-----------------------------------------------------" + Style.RESET_ALL)
 
     # --------------------
     # MAIN ANALYSIS
-    # --------------------
+
     def get_matrix(self):
         """ Returns a (rows, desc, state_list) describing transitions as numeric probabilities. """
         import numpy as np
@@ -117,7 +117,7 @@ class gramPrintListener(gramListener):
             for d, w in zip(dests, weights):
                 prob = w/total if total else 0
                 row[state_list.index(d)] = prob
-            label = f"[{idx}] ({dep}, {act})" if t_type == "MDP" else f"[{idx}] ({dep})"
+            label = f"[{idx}] ({dep}, {act})" if t_type == "MDP" else f"[{idx}]    ({dep})"
             desc.append(label)
             rows.append(row)
         return rows, desc, state_list
@@ -176,7 +176,6 @@ class gramPrintListener(gramListener):
 
     # --------------------
     # MULTIPLE PROBA METHODS
-    # --------------------
 
     def proba_symbolic(self, win_set, doubt_set):
         """ Symbolic approach for MC (already implemented). """
