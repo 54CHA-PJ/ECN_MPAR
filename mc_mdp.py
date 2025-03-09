@@ -54,34 +54,35 @@ class gramPrintListener(gramListener):
 
     def validate(self):
         valid = True
-        # Warnings for states without explicit reward
+        # [WARNING] for states without explicit reward
         for warn_state in self.warning_state_list:
             print(f"{Fore.YELLOW}[Warning]{Style.RESET_ALL} State {Fore.YELLOW}{warn_state}{Style.RESET_ALL} has no reward (default 0).")
-
-        # Must have S0 as an initial state
-        if "S0" not in self.states:
-            print(f"{Fore.LIGHTRED_EX}[ERROR]{Style.RESET_ALL} No initial state 'S0' found.")
-            valid = False
-
+            self.rewards[warn_state] = 0
         # Check transitions
         for t_type, dep, act, dests, weights in self.transitions:
-            # Action declared?
+            # [WARNING] Action declared?
             if act and act not in self.actions:
                 print(f"{Fore.YELLOW}[Warning]{Style.RESET_ALL} Action {Fore.YELLOW}{act}{Style.RESET_ALL} not declared.")
-            # Negative weights?
+                self.actions.append(act)
+            # [WARNING] Destination state unknown?
+            for d in dests:
+                if d not in self.states:
+                    print(f"{Fore.YELLOW}[Warning]{Style.RESET_ALL} Destination state {Fore.YELLOW}{d}{Style.RESET_ALL} unknown.")
+                    self.states.append(d)
+            # [ERROR] Negative weights?
             if any(w < 0 for w in weights):
                 print(f"{Fore.LIGHTRED_EX}[ERROR]{Style.RESET_ALL} Negative weight found in transition {dep} -> {dests}.")
                 valid = False
-            # Mixed MDP/MC from the same departure?
+            # [ERROR] Mixed MDP/MC from the same departure?
             if t_type == "MC":
                 for other in self.transitions:
                     if other[0] == "MDP" and other[1] == dep:
                         print(f"{Fore.LIGHTRED_EX}[ERROR]{Style.RESET_ALL} Mixed MC+MDP on state {dep}.")
                         valid = False
-            # Destination states unknown?
-            for d in dests:
-                if d not in self.states:
-                    print(f"{Fore.YELLOW}[Warning]{Style.RESET_ALL} Destination state {Fore.YELLOW}{d}{Style.RESET_ALL} unknown.")
+        # [ERROR] Must have S0 as an initial state
+        if "S0" not in self.states:
+            print(f"{Fore.LIGHTRED_EX}[ERROR]{Style.RESET_ALL} No initial state 'S0' found.")
+            valid = False
         return valid
 
     def check(self, filename):
