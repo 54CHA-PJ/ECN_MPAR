@@ -3,7 +3,7 @@ import sys
 import random
 import networkx as nx
 from antlr4 import InputStream, CommonTokenStream, ParseTreeWalker
-import math
+import numpy as np
 
 # UI
 from colorama import Fore, Style, init as colorama_init
@@ -26,10 +26,16 @@ from gramParser import gramParser
 from mc_mdp import gramPrintListener
 
 # Example file
-DEFAULT_FILE = "ex.mdp"
+DEFAULT_FILE = "./mdp/ex.mdp"
+# Location of MDP files
+MDP_DIR = "./mdp"
+
+# -----------------------------------------------------------------
+# GRAPH PLOTTING
+# -----------------------------------------------------------------
 
 class PlotCanvas(FigureCanvas):
-    """For visualizing the model graph."""
+
     def __init__(self, parent=None, width=10, height=6, dpi=100):
         self.fig, self.ax = plt.subplots(figsize=(width, height), dpi=dpi)
         super().__init__(self.fig)
@@ -37,6 +43,7 @@ class PlotCanvas(FigureCanvas):
         self.show_welcome()
 
     def show_welcome(self):
+        """ Show "Welcome" Message """
         self.ax.clear()
         self.ax.axis('off')
         self.ax.text(0.5, 0.6, "Welcome to the MC/MDP Simulator!",
@@ -46,31 +53,51 @@ class PlotCanvas(FigureCanvas):
                      ha='center', va='center', transform=self.ax.transAxes, fontsize=12,
                      path_effects=[PathEffects.withStroke(linewidth=3, foreground="white")])
         self.draw()
-
-    def get_state_order(self, model):
-        """Extract states in the order they first appear in the transitions.
-           Assumes that the order of appearance reflects the declaration order.
+        
+    def plot_model(self, model):
         """
-        state_order = []
+        Create and plots the model :
+        - Build the graph       (build_graph)
+        - Compute positions     (get_positions)
+        - Normalize positions   (norm_positions)
+        - Draw nodes and labels (nx.draw_networkx_*)
+        - Draw edges            (draw_better_edges)
+        - Show probabilities    (plot_proba)
+        - Draw the graph        (draw)
+        """
+        self.ax.clear()
+        self.ax.axis('off')
+        G = self.build_graph(model)
+        pos = self.get_positions(G, model.states) # Having Model States as a parameter allows to modify the order of appearance
+        nx.draw_networkx_nodes(G, pos, node_color='lightgray', ax=self.ax)
+        nx.draw_networkx_labels(G, pos, ax=self.ax)
+        self.draw_better_edges(G, pos)
+        self.plot_proba(model, pos)
+        self.draw()
+    
+    # ------------------------------
+    # AUXILIARY FUNCTIONS : STATES
+    # ------------------------------
+    
+    def build_graph(self, model):
+        """ Build the model as a directed graph """
+        G = nx.MultiDiGraph()
         for (t_type, dep, act, dests, weights) in model.transitions:
-            if dep not in state_order:
-                state_order.append(dep)
-            for dest in dests:
-                if dest not in state_order:
-                    state_order.append(dest)
-        return state_order
+            total = sum(weights)
+            probs = [w / total if total else 0 for w in weights]
+            color = 'blue' if t_type == "MDP" else 'red'
+            for p, dest in zip(probs, dests):
+                label = f"[{act}]\n{p:.2f}" if act else f"{p:.2f}"
+                G.add_edge(dep, dest, label=label, color=color, arrow_type=t_type)
+        return G
 
-    def hierarchical_layout(self, G, state_order, layer_distance=3):
-        """
-        Compute positions using a hierarchical layout (BFS from S0) to minimize edge overlaps.
-        Nodes are arranged in concentric circles based on their distance from S0.
-        Within each layer, nodes are sorted according to their declaration order.
-        """
-        # Determine the root: use S0 if available, otherwise the first declared state.
-        if "S0" in state_order:
-            root = "S0"
-        elif state_order:
-            root = state_order[0]
+    def get_positions(self, G, states, layer_distance=3, root_name="S0"):
+        """ Compute positions using a hierarchical layout, centered on S0 (by default) """
+        # Define the root node
+        if root_name in states:
+            root = root_name
+        elif states:
+            root = states[0]
         else:
             return {}
         pos = {}
@@ -87,76 +114,25 @@ class PlotCanvas(FigureCanvas):
         sorted_layers = sorted(layers.keys())
         # Place the root at the center.
         pos[root] = (0, 0)
+        # Place the other nodes in layers around the root.
         for layer in sorted_layers:
             if layer == 0:
                 continue
             nodes = layers[layer]
-            # Sort nodes by their declaration order.
-            nodes.sort(key=lambda x: state_order.index(x) if x in state_order else x)
             n = len(nodes)
-            angle_gap = 2 * math.pi / n if n > 0 else 0
+            angle_gap = 2 * np.pi / n if n > 0 else 0
             radius = layer * layer_distance
             for i, node in enumerate(nodes):
                 angle = i * angle_gap
-                pos[node] = (radius * math.cos(angle), radius * math.sin(angle))
+                pos[node] = (radius * np.cos(angle), radius * np.sin(angle))
         return pos
 
-    def normalize_positions(self, pos, target_radius=3):
-        """
-        Scale all positions so that the furthest node from the origin
-        lies at target_radius. This ensures that the graph's size is consistent.
-        """
-        if not pos:
-            return pos
-        max_val = max(math.sqrt(x**2 + y**2) for (x, y) in pos.values())
-        if max_val == 0:
-            return pos
-        factor = target_radius / max_val
-        new_pos = {node: (x * factor, y * factor) for node, (x, y) in pos.items()}
-        return new_pos
-
-    def plot_model(self, model):
-        self.ax.clear()
-        self.ax.axis('off')
-        G = self.build_graph(model)
-        state_order = self.get_state_order(model)
-        pos = self.hierarchical_layout(G, state_order)
-        pos = self.normalize_positions(pos, target_radius=3)
-        nx.draw_networkx_nodes(G, pos, node_color='lightgray', ax=self.ax)
-        nx.draw_networkx_labels(G, pos, ax=self.ax)
-        self.draw_better_edges(G, pos)
-        # Draw additional text: winning probability beside each state if available
-        if hasattr(model, "state_prob"):
-            for node, p in model.state_prob.items():
-                # Offset the probability text slightly from the node
-                x, y = pos.get(node, (0, 0))
-                # For S0, use a larger font size because it is the initial state
-                if node == "S0":
-                    fontsize = 12
-                else:
-                    fontsize = 8
-                self.ax.text(x + 0.05, y + 0.05, f"{p:.2f}", color="black",
-                             fontweight="bold", fontsize=fontsize)
-        self.draw()
+    # ------------------------------
+    # AUXILIARY FUNCTIONS : EDGES
+    # ------------------------------
     
-    def build_graph(self, model):
-        """Build the model as a directed graph."""
-        G = nx.MultiDiGraph()
-        for (t_type, dep, act, dests, weights) in model.transitions:
-            total = sum(weights)
-            probs = [w / total if total else 0 for w in weights]
-            color = 'blue' if t_type == "MDP" else 'red'
-            for p, dest in zip(probs, dests):
-                label = f"[{act}]\n{p:.2f}" if act else f"{p:.2f}"
-                G.add_edge(dep, dest, label=label, color=color, arrow_type=t_type)
-        return G
-
     def draw_better_edges(self, G, pos):
-        """
-        Draw edges with small arcs and labels with a white contour.
-        For non-loop edges, the label is placed closer to the source node.
-        For self-loop edges, a fixed minimal arc is used (without drawing an extra circle).
-        """
+        """  Draw edges with small arcs and labels with a white contour """
         groups = {}
         for u, v, d in G.edges(data=True):
             groups.setdefault((u, v), []).append(d)
@@ -176,7 +152,7 @@ class PlotCanvas(FigureCanvas):
                         ax=self.ax
                     )
                     x, y = pos[u]
-                    self.ax.text(x, y + fixed_curvature, "⟳ " + d['label'], fontsize=7,
+                    self.ax.text(x, y + 0.3, "⟳ " + d['label'], fontsize=7,
                                  color=d['color'], ha='center', va='center',
                                  path_effects=[PathEffects.withStroke(linewidth=2, foreground="white")])
 
@@ -201,24 +177,23 @@ class PlotCanvas(FigureCanvas):
                     xm = x1 + t * (x2 - x1)
                     ym = y1 + t * (y2 - y1)
                     dx, dy = x2 - x1, y2 - y1
-                    dist = math.sqrt(dx**2 + dy**2) or 1
+                    dist = np.sqrt(dx**2 + dy**2) or 1
                     perp = (dy/dist, -dx/dist)
                     self.ax.text(xm + cur * perp[0], ym + cur * perp[1],
                                  d['label'], fontsize=7, color=d['color'],
                                  ha='center', va='center',
                                  path_effects=[PathEffects.withStroke(linewidth=3, foreground="white")])
     
+    # ------------------------------
+    # AUXILIARY FUNCTION : ANIMATION STEP
+    
     def plot_simulation_state(self, model, current_state, chosen_edge=None):
-        """
-        Redraws the model and highlights one edge (chosen_edge) with the same arc offset
-        and color that was used in draw_better_edges.
-        """
+        """ Redraws the model and highlights one edge """
         self.ax.clear()
         self.ax.axis('off')
         G = self.build_graph(model)
-        state_order = self.get_state_order(model)
-        pos = self.hierarchical_layout(G, state_order)
-        pos = self.normalize_positions(pos, target_radius=3)
+        states = model.states
+        pos = self.get_positions(G, states)
         # Mark the current state in red; all others in lightgray.
         node_colors = ['red' if n == current_state else 'lightgray' for n in G.nodes()]
         nx.draw_networkx_nodes(G, pos, node_color=node_colors, ax=self.ax)
@@ -255,6 +230,27 @@ class PlotCanvas(FigureCanvas):
                         ax=self.ax
                     )
         self.draw()
+        
+    def plot_proba(self, model, pos):
+        """ Show the probability of winning in each state """
+        # Draw additional text: winning probability beside each state if available
+        if hasattr(model, "state_prob"):
+            for node, p in model.state_prob.items():
+                x, y = pos.get(node, (0, 0))
+                fontweight = "bold"
+                if p == 0: 
+                    text_str = "0"  
+                    color = "red"
+                else:
+                    text_str = f"{p:.3f}"
+                    color = "green" if node == "S0" else "black"
+                    
+                fontsize = 12 if node == "S0" else 8
+                self.ax.text(x - 0.5, y - 0.5, text_str, 
+                             color=color, fontweight=fontweight, fontsize=fontsize)
+# -----------------------------------------------------------------
+# MAIN WINDOW
+# -----------------------------------------------------------------
 
 class MainWindow(QMainWindow):
     def __init__(self):
@@ -282,6 +278,8 @@ class MainWindow(QMainWindow):
         # Probability analysis 
         self.probabilityButton = QPushButton("Probability analysis")
         self.probabilityButton.clicked.connect(self.probability_analysis)
+        self.hideProbabilityButton = QPushButton("Hide Probabilities")
+        self.hideProbabilityButton.clicked.connect(self.hide_probabilities)
     
         # Simulation
         self.simulateButton = QPushButton("Launch Simulation!")
@@ -301,6 +299,7 @@ class MainWindow(QMainWindow):
         hlayout.addWidget(self.exampleButton)
         hlayout.addWidget(self.printMatrixButton)
         hlayout.addWidget(self.probabilityButton)
+        hlayout.addWidget(self.hideProbabilityButton)
         hlayout.addWidget(self.delayLabel)
         hlayout.addWidget(self.delaySpinBox)
         hlayout.addWidget(self.simulateButton)
@@ -318,7 +317,7 @@ class MainWindow(QMainWindow):
 
     def load_file(self):
         fname, _ = QFileDialog.getOpenFileName(
-            self, "Open Model File", "", "MDP Files (*.mdp);;All Files (*)"
+            self, "Open Model File", MDP_DIR, "MDP Files (*.mdp);;All Files (*)"
         )
         if fname:
             self.process_file(fname)
@@ -346,25 +345,21 @@ class MainWindow(QMainWindow):
     # Probability analysis
     
     def probability_analysis(self):
-        
         # If no model is loaded
         if not self.model:
             print(Fore.LIGHTRED_EX + "No model loaded!" + Style.RESET_ALL)
             return
-
         # 1. Prompt the user for win states
         text, ok = QInputDialog.getText( self, "Win States", "Enter win state(s), separate using \',\' :" )
         if not ok or not text.strip():
             return 
         win_states = [s.strip() for s in text.split(",") if s.strip()]
-
         # 2. Compute state analysis
         w, l, inc = self.model.get_state_analysis(win_states)
         print(Fore.LIGHTRED_EX + "\n-------------- Probability Calculation --------------" + Style.RESET_ALL)
         print(Fore.LIGHTRED_EX + f"Win States :  {Style.RESET_ALL}{w}")
         print(Fore.LIGHTRED_EX + f"Lose States : {Style.RESET_ALL}{l}")
         print(Fore.LIGHTRED_EX + f"Incertitude : {Style.RESET_ALL}{inc}")
-
         # 3. Let user choose which method
         method_options = ["Symbolic", "Iterative", "Statistical"]
         method, ok2 = QInputDialog.getItem(
@@ -377,7 +372,7 @@ class MainWindow(QMainWindow):
         if not inc:
             print("\n[PROBA] No incertitude states, no computation needed.")
             return
-
+        # Main function call
         if method == "Symbolic":
             probs = self.model.proba_symbolic(w, inc)
         elif method == "Iterative":
@@ -396,6 +391,10 @@ class MainWindow(QMainWindow):
             state_prob[s] = p
         self.model.state_prob = state_prob
         # Update the graph to show the new probabilities
+        self.canvas.plot_model(self.model)
+        
+    def hide_probabilities(self):
+        self.model.state_prob = {}
         self.canvas.plot_model(self.model)
 
     # --------------------
