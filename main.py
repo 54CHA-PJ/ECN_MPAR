@@ -125,8 +125,20 @@ class PlotCanvas(FigureCanvas):
         nx.draw_networkx_nodes(G, pos, node_color='lightgray', ax=self.ax)
         nx.draw_networkx_labels(G, pos, ax=self.ax)
         self.draw_better_edges(G, pos)
+        # Draw additional text: winning probability beside each state if available
+        if hasattr(model, "state_prob"):
+            for node, p in model.state_prob.items():
+                # Offset the probability text slightly from the node
+                x, y = pos.get(node, (0, 0))
+                # For S0, use a larger font size because it is the initial state
+                if node == "S0":
+                    fontsize = 12
+                else:
+                    fontsize = 8
+                self.ax.text(x + 0.05, y + 0.05, f"{p:.2f}", color="black",
+                             fontweight="bold", fontsize=fontsize)
         self.draw()
-
+    
     def build_graph(self, model):
         """Build the model as a directed graph."""
         G = nx.MultiDiGraph()
@@ -341,7 +353,7 @@ class MainWindow(QMainWindow):
             return
 
         # 1. Prompt the user for win states
-        text, ok = QInputDialog.getText( self, "Win States", "Enter win state(s), separate using \\',\\' :" )
+        text, ok = QInputDialog.getText( self, "Win States", "Enter win state(s), separate using \',\' :" )
         if not ok or not text.strip():
             return 
         win_states = [s.strip() for s in text.split(",") if s.strip()]
@@ -377,6 +389,14 @@ class MainWindow(QMainWindow):
         for st, val in zip(inc, probs):
             print(f"   - {Fore.LIGHTYELLOW_EX}{st}{Style.RESET_ALL} : {val:.4f}")
         print(Fore.LIGHTRED_EX + "-----------------------------------------------------" + Style.RESET_ALL)
+        # Build full state probability dictionary: win=1, lose=0, inc from computed vector.
+        state_prob = {s: 1.0 for s in w}
+        state_prob.update({s: 0.0 for s in l})
+        for s, p in zip(inc, probs):
+            state_prob[s] = p
+        self.model.state_prob = state_prob
+        # Update the graph to show the new probabilities
+        self.canvas.plot_model(self.model)
 
     # --------------------
     # Simulation

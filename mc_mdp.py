@@ -151,11 +151,6 @@ class gramPrintListener(gramListener):
                 lose_states.append(s)
         incertitude = [s for s in self.states if s not in win_states and s not in lose_states]
         return win_states, lose_states, incertitude
-    
-# --------------------------------------
-# Probability calculation 
-    
-# SYMBOLIC APPROACH
 
     def proba_symbolic_MC(self, win_set, doubt_set):
         """
@@ -186,13 +181,11 @@ class gramPrintListener(gramListener):
                     A[i, j] += prob
                 elif d in win_set:
                     b[i] += prob
-        # Print matrix for MC symbolic calculation
         print(Fore.LIGHTBLUE_EX + "\n--- Symbolic MC Transition Matrix ---" + Style.RESET_ALL)
         print("Matrix A:")
         print(A)
         print("Vector b:")
         print(b)
-        # Solve linear system (I-A)x = b
         I_minus_A = np.eye(n) - A
         x = np.linalg.solve(I_minus_A, b)
         print("Solution x:")
@@ -233,14 +226,12 @@ class gramPrintListener(gramListener):
                     elif d in doubt_set:
                         j = doubt_set.index(d)
                         row[j] += prob
-                    # If destination is losing, contributes 0.
-                # Choose the action with the smallest r (worst-case)
-                if r < best_r:
+                # Update best action if r is lower, or if equal and sum(row) is lower
+                if r < best_r or (r == best_r and np.sum(row) < np.sum(best_row)):
                     best_r = r
                     best_row = row
             A[i, :] = best_row
             b[i] = best_r
-        # Print the matrix for MDP symbolic calculation
         print(Fore.LIGHTBLUE_EX + "\n--- Symbolic MDP Transition Matrix (Selected Actions) ---" + Style.RESET_ALL)
         print("Matrix A:")
         print(A)
@@ -265,8 +256,60 @@ class gramPrintListener(gramListener):
 # ITERATIVE APPROACH
 
     def proba_iterative(self, win_set, doubt_set):
-        print("[Iterative] Not implemented yet. Returning dummy zeros.")
-        return np.zeros(len(doubt_set))
+        """
+        Iterative approach: Begin with known values (win=1, lose=0) and update
+        uncertain states until convergence. For MC states, update via the weighted sum;
+        for MDP states, update via the minimum over actions.
+        """
+        win, lose, inc = self.get_state_analysis(win_set)
+        # Initialize value function V(s)
+        V = {s: (1.0 if s in win else 0.0 if s in lose else 0.0) for s in self.states}
+        max_iter = 1000
+        tol = 1e-8
+        for it in range(max_iter):
+            delta = 0.0
+            # Update every uncertain state (states not in win or lose)
+            for s in self.states:
+                if s in win or s in lose:
+                    continue
+                transitions_from_s = [t for t in self.transitions if t[1] == s]
+                if not transitions_from_s:
+                    continue
+                # If state s has only MC transitions, use weighted sum update.
+                if all(t[0] == "MC" for t in transitions_from_s):
+                    t = transitions_from_s[0]
+                    _, dep, act, dests, weights = t
+                    total = sum(weights)
+                    new_val = 0.0
+                    if total > 0:
+                        for d, w in zip(dests, weights):
+                            new_val += (w / total) * V[d]
+                else:
+                    # For MDP, group transitions by action and take minimum over actions.
+                    actions = {}
+                    for t in transitions_from_s:
+                        act = t[2]
+                        actions.setdefault(act, []).append(t)
+                    vals = []
+                    for act, t_list in actions.items():
+                        val = 0.0
+                        for t in t_list:
+                            _, dep, act, dests, weights = t
+                            total = sum(weights)
+                            if total > 0:
+                                for d, w in zip(dests, weights):
+                                    val += (w / total) * V[d]
+                        vals.append(val)
+                    new_val = min(vals) if vals else 0.0
+                delta = max(delta, abs(new_val - V[s]))
+                V[s] = new_val
+            if delta < tol:
+                break
+        print(Fore.LIGHTBLUE_EX + "\n--- Iterative Probabilities ---" + Style.RESET_ALL)
+        for s in self.states:
+            print(f"{s}: {V[s]:.4f}")
+        # Return the probabilities for the uncertain states in the order provided
+        return [V[s] for s in doubt_set]
     
 # STATISTICAL APPROACH
 
