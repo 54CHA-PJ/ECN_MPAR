@@ -5,13 +5,14 @@ from gramListener import gramListener
 from gramParser import gramParser
 import numpy as np
 from tqdm import tqdm
+from scipy.optimize import linprog
 
 class gramPrintListener(gramListener):
     """
 
     - MODEL CREATION         : states, actions, transitions, rewards
     
-    - MODEL VISUALIZATION    : check, describe, get_matrix
+    - MODEL VISUALIZATION    : check, describe, get_matrix_mix
     
     - PROBABILITY OF WINNING :
         - PROBABILITY - SYMBOLIC     : proba_symbolic_MC, proba_symbolic_MDP, proba_symbolic
@@ -22,9 +23,9 @@ class gramPrintListener(gramListener):
     - REINFORCEMENT LEARNING : TODO
     """
     
-    """ -----------------------------
-             MODEL CREATION
-    ------------------------------"""
+    """------------------------------------------------------------
+                            MODEL CREATION
+    ------------------------------------------------------------"""
     
     def __init__(self):
         super().__init__()
@@ -63,9 +64,9 @@ class gramPrintListener(gramListener):
         weights = [int(str(x)) for x in ctx.INT()]
         self.transitions.append(("MC", dep, None, ids, weights))
         
-    """ -----------------------------
-          MODEL VISUALIZATION
-    ------------------------------"""
+    """------------------------------------------------------------
+                        MODEL VISUALIZATION
+    ------------------------------------------------------------"""
 
     def validate(self):
         valid = True
@@ -115,7 +116,7 @@ class gramPrintListener(gramListener):
         print(Fore.LIGHTBLUE_EX + "-----------------------------------------------------" + Style.RESET_ALL)
         
 
-    def get_matrix(self):
+    def get_matrix_mix(self):
         # Build transition matrix for printing in the UI
         state_list = self.states[:]
         rows = []
@@ -131,10 +132,70 @@ class gramPrintListener(gramListener):
             desc.append(label)
             rows.append(row)
         return rows, desc, state_list
+    
+    def get_matrix_MC(self):
+        """ 
+        Pour uniquement un modèle MC, fournit :
+         - La matrice de transition A (N lignes, N colonnes)
+         - Une liste de descriptions des transitions 
+        """
+        N = len(self.states)
+        A = np.zeros((N, N))
+        desc = []
+        for i, s in enumerate(self.states):
+            desc.append(s)
+            # On cherche une transition MC partant de s
+            for (t_type, dep, act, dests, weights) in self.transitions:
+                if t_type == "MC" and dep == s:
+                    total = sum(weights)
+                    probs = [w / total for w in weights] if total > 0 else [0] * len(weights)
+                    for d, p in zip(dests, probs):
+                        j = self.states.index(d)
+                        A[i, j] = p
+                    break  # on suppose qu'il n'y a qu'une seule transition MC par état
+        return A, desc
+
+    def get_matrix_MDP(self):
+        """ 
+        Pour un modèle MC ou MP
+         - La matrice de transition A (N*A lignes, N colonnes)
+         - Une liste de descriptions des transitions 
+        """
+        N = len(self.states)
+        A_count = len(self.actions)
+        M = np.zeros((N * A_count, N))
+        desc = []
+        for i, s in enumerate(self.states):
+            for a_idx, action in enumerate(self.actions):
+                row_index = i * A_count + a_idx
+                desc.append(f"[{s} | {action}]")
+                # Chercher une transition MDP pour cet état et cette action
+                mdp_transitions = [t for t in self.transitions if t[0] == "MDP" and t[1] == s and t[2] == action]
+                if mdp_transitions:
+                    t = mdp_transitions[0]
+                    _, dep, act, dests, weights = t
+                    total = sum(weights)
+                    probs = [w / total for w in weights] if total > 0 else [0] * len(weights)
+                    for d, p in zip(dests, probs):
+                        j = self.states.index(d)
+                        M[row_index, j] = p
+                else:
+                    # Sinon, si une transition MC existe pour s, on l'utilise
+                    mc_transitions = [t for t in self.transitions if t[0] == "MC" and t[1] == s]
+                    if mc_transitions:
+                        t = mc_transitions[0]
+                        _, dep, act, dests, weights = t
+                        total = sum(weights)
+                        probs = [w / total for w in weights] if total > 0 else [0] * len(weights)
+                        for d, p in zip(dests, probs):
+                            j = self.states.index(d)
+                            M[row_index, j] = p
+        return M, desc
+
         
-    """ -----------------------------
-         PROBABILITY OF WINNING
-    ------------------------------"""
+    """------------------------------------------------------------
+                      PROBABILITY OF WINNING
+    ------------------------------------------------------------"""
 
     def get_state_analysis(self, initial_win_states=["S0"]):
         # Classify states as winning, losing, or uncertain
@@ -188,78 +249,94 @@ class gramPrintListener(gramListener):
     def proba_symbolic_MC(self, win_set, lose_set, doubt_set):
         """
         MC: Solve (I-A)x=b to get win probabilities for uncertain states (doubt_set)
-        A: matrix of transition probabilities in doubt_set
-        b: vector of direct win probabilities from uncertain states
+            - A: matrix of transition probabilities in doubt_set
+            - b: vector of direct win probabilities from uncertain states
+            - Using LINPROG
         """
-        n = len(doubt_set)
-        if n == 0:
+        # If no uncertain states, it is already solved
+        if not doubt_set:
             return []
-        A = np.zeros((n, n))
-        b = np.zeros(n)
-        # Loop over each uncertain state
-        for i, s in enumerate(doubt_set):
-            # Get MC transitions from state s
-            mc_trans = [t for t in self.transitions if t[0] == "MC" and t[1] == s]
-            if not mc_trans:
-                continue
-            trans_type, dep, act, dests, weights = mc_trans[0]
-            total = sum(weights)
-            if total == 0:
-                continue
-            # Distribute probabilities to uncertain or win states
-            for d, w in zip(dests, weights):
-                prob = w / total
-                if d in doubt_set:
-                    j = doubt_set.index(d)
-                    A[i, j] += prob
-                elif d in win_set:
-                    b[i] += prob
-        I_minus_A = np.eye(n) - A
-        x = np.linalg.solve(I_minus_A, b)
-        return x
+        A, _ = self.get_matrix_MC()                         # Transition matrix
+        doubt_list = list(doubt_set)                        # List of doubt states
+        d_idx = {s: i for i, s in enumerate(doubt_list)}                        # Index of each doubt state
+        w_index = [self.states.index(s) for s in win_set if s in self.states]   # Index of win states
+        # Build equality constraints : 
+        # (I-A) * x = b
+        # x(s) - sum_{j in doubt} A[s,j]* x(j) = sum_{j in W} A[s,j]
+        A_ub = []   # Coeffs of the Left side of the equation
+        b_ub = []   # Right side of the equation
+        for s in doubt_list:
+            si = self.states.index(s)
+            lhs = [0]*len(doubt_list)
+            lhs[d_idx[s]] = 1
+            for s2 in doubt_list:
+                j = self.states.index(s2)
+                lhs[d_idx[s2]] -= A[si, j]
+            sumW = sum(A[si, wj] for wj in w_index)
+            A_ub.append(lhs)
+            b_ub.append(sumW)
+            A_ub.append([-x for x in lhs])
+            b_ub.append(-sumW)
+        # Bounds of the variables (probabilities)
+        bounds = [(0,1)]*len(doubt_list)
+        # Objective : equality constraints (c=0)
+        c = [0]*len(doubt_list)
+        # Solve using LINPROG
+        res = linprog(c, A_ub=A_ub, b_ub=b_ub, bounds=bounds, method="highs")
+        if not res.success:
+            print(f"{Fore.LIGHTRED_EX}[ERROR]{Style.RESET_ALL} Symbolic approach failed.")
+            return [0]*len(doubt_list)
+        x_sol = res.x
+        # Round to 0 or 1 if close enough
+        for i in range(len(x_sol)):
+            if x_sol[i] < 1e-8: x_sol[i] = 0
+            elif x_sol[i] > 1-(1e-8): x_sol[i] = 1
+        return [x_sol[d_idx[s]] for s in doubt_list]
+
 
     def proba_symbolic_MDP(self, win_set, lose_set, doubt_set):
         """
-        MDP (symbolic approach): For each uncertain state, choose the action (row)
-        that gives the lowest direct win probability. Then build a matrix A and vector b
-        where, for state s, b(s) is the chosen action's win probability (i.e. sum of probabilities
-        leading directly to win states) and A(s, t) holds the transition probabilities to uncertain states.
-        Solve (I-A)x = b.
+        Solve MDP probability (symbolic) using linprog for max reachability.
         """
-        n = len(doubt_set)
-        if n == 0:
+        # If no uncertain states, it is already solved
+        if not doubt_set:
             return []
-        A = np.zeros((n, n))
-        b = np.zeros(n)
-        # Loop over each uncertain state s
-        for i, s in enumerate(doubt_set):
-            # Gather all transitions (actions) from state s
-            actions = [t for t in self.transitions if t[1] == s]
-            best_r = float('inf')
-            best_row = np.zeros(n)
-            # Evaluate each action row
-            for (t_type, dep, act, dests, weights) in actions:
-                total = sum(weights)
-                if total == 0:
-                    continue
-                r = 0.0  # direct win probability for this action
-                row = np.zeros(n)  # transition probabilities to uncertain states
-                for d, w in zip(dests, weights):
-                    prob = w / total
-                    if d in win_set:
-                        r += prob
-                    elif d in doubt_set:
-                        j = doubt_set.index(d)
-                        row[j] += prob
-                # Update best action if r is lower, or if equal and sum(row) is lower
-                if r < best_r or (r == best_r and np.sum(row) < np.sum(best_row)):
-                    best_r = r
-                    best_row = row
-            A[i, :] = best_row
-            b[i] = best_r
-        I_minus_A = np.eye(n) - A
-        x = np.linalg.solve(I_minus_A, b)
-        return x
+        M, _ = self.get_matrix_MDP()                        # Transition matrix
+        A_count = len(self.actions)                         # Number of actions
+        doubt_list = list(doubt_set)                        # List of doubt states
+        d_idx = {s: i for i, s in enumerate(doubt_list)}                            # Index of each doubt state
+        w_index = {self.states.index(s) for s in win_set if s in self.states}       # Index of win states
+        # Build inequality constraints :
+        # (I-M)x >= 0
+        # x(s) - sum_{j in doubt} M[s,j]* x(j) >= 0
+        A_ub = []
+        b_ub = []
+        for s in doubt_list:
+            si = self.states.index(s)
+            for a_idx in range(A_count):
+                row = si*A_count + a_idx
+                lhs = [0]*len(doubt_list)
+                for s2 in doubt_list:
+                    j = self.states.index(s2)
+                    lhs[d_idx[s2]] += M[row, j]
+                lhs[d_idx[s]] -= 1
+                sumW = sum(M[row, wj] for wj in w_index)
+                A_ub.append(lhs)
+                b_ub.append(-sumW)
+        # Bounds of the variables (probabilities)
+        bounds = [(0,1)]*len(doubt_list)
+        # Objective : optimization (c=-1) 
+        c = [-1]*len(doubt_list)
+        # Solve using LINPROG
+        res = linprog(c, A_ub=A_ub, b_ub=b_ub, bounds=bounds, method="highs")
+        if not res.success:
+            return [0]*len(doubt_list)
+        x_sol = res.x
+        # Round to 0 or 1 if close enough
+        for i in range(len(x_sol)):
+            if x_sol[i] < 1e-8: x_sol[i] = 0
+            elif x_sol[i] > 1-(1e-8): x_sol[i] = 1
+        return [x_sol[d_idx[s]] for s in doubt_list]
 
     def proba_symbolic(self, win_set, lose_set, doubt_set):
         # Check if there is any MDP transition or not
@@ -273,58 +350,72 @@ class gramPrintListener(gramListener):
     # PROBABILITY - ITERATIVE APPROACH 
     # ------------------------------------------------------------
 
-    def proba_iterative(self, win_set, lose_set, doubt_set):
+    def proba_iterative_MC(self, win_set, lose_set, doubt_set, tolerance=1e-8, max_iter=1000):
         """
         Iterative approach: 
          - Begin with known values (win=1, lose=0) and update uncertain states until convergence. 
             - For MC states, update via the weighted sum
             - For MDP states, update via the minimum over actions.
         """
-        # Initialize value function V(s)
-        V = {s: (1.0 if s in win_set else 0.0 if s in lose_set else 0.0) for s in self.states}
-        max_iter = 1000
-        tol = 1e-8
-        for it in range(max_iter):
-            delta = 0.0
-            # Update every uncertain state (states not in win or lose)
-            for s in self.states:
-                if s in win_set or s in lose_set:
-                    continue
-                transitions_from_s = [t for t in self.transitions if t[1] == s]
-                if not transitions_from_s:
-                    continue
-                # If state s has only MC transitions, use weighted sum update.
-                if all(t[0] == "MC" for t in transitions_from_s):
-                    t = transitions_from_s[0]
-                    _, dep, act, dests, weights = t
-                    total = sum(weights)
-                    new_val = 0.0
-                    if total > 0:
-                        for d, w in zip(dests, weights):
-                            new_val += (w / total) * V[d]
-                else:
-                    # For MDP, group transitions by action and take minimum over actions.
-                    actions = {}
-                    for t in transitions_from_s:
-                        act = t[2]
-                        actions.setdefault(act, []).append(t)
-                    vals = []
-                    for act, t_list in actions.items():
-                        val = 0.0
-                        for t in t_list:
-                            _, dep, act, dests, weights = t
-                            total = sum(weights)
-                            if total > 0:
-                                for d, w in zip(dests, weights):
-                                    val += (w / total) * V[d]
-                        vals.append(val)
-                    new_val = min(vals) if vals else 0.0
-                delta = max(delta, abs(new_val - V[s]))
-                V[s] = new_val
-            if delta < tol:
-                break
-        # Return the probabilities for the uncertain states in the order provided
-        return [V[s] for s in doubt_set]
+        if not doubt_set:
+            return []
+        A, _ = self.get_matrix_MC()
+        N = len(self.states)
+        x = np.zeros(N)
+        for i, s in enumerate(self.states):
+            if s in win_set: x[i] = 1
+            elif s in lose_set: x[i] = 0
+        for _ in range(max_iter):
+            diff = 0
+            x_new = x.copy()
+            for s in doubt_set:
+                i = self.states.index(s)
+                # x[i] = sum_{j} A[i,j]* x[j] (since W=1, L=0 are already in x)
+                ssum = 0
+                for j in range(N):
+                    ssum += A[i,j]* x[j]
+                x_new[i] = ssum
+            diff = np.max(np.abs(x_new - x))
+            x = x_new
+            if diff < tolerance: break
+        return [x[self.states.index(s)] for s in doubt_set]
+
+
+    def proba_iterative_MDP(self, win_set, lose_set, doubt_set, tolerance=1e-8, max_iter=1000):
+        if not doubt_set:
+            return []
+        M, _ = self.get_matrix_MDP()
+        N = len(self.states)
+        A_count = len(self.actions)
+        x = np.zeros(N)
+        for i,s in enumerate(self.states):
+            if s in win_set: x[i] = 1
+            elif s in lose_set: x[i] = 0
+        for _ in range(max_iter):
+            diff = 0
+            x_new = x.copy()
+            for s in doubt_set:
+                i = self.states.index(s)
+                best = 0
+                base = i*A_count
+                for a_idx in range(A_count):
+                    row = base + a_idx
+                    val = M[row,:].dot(x)
+                    if val > best:
+                        best = val
+                x_new[i] = best
+            diff = np.max(np.abs(x_new - x))
+            x = x_new
+            if diff < tolerance: break
+        return [x[self.states.index(s)] for s in doubt_set]
+    
+    def proba_iterative(self, win_set, lose_set, doubt_set):
+        # Check if there is any MDP transition or not
+        has_mdp = any(t[0] == "MDP" for t in self.transitions)
+        if not has_mdp:
+            return self.proba_iterative_MC(win_set, lose_set, doubt_set)
+        else:
+            return self.proba_iterative_MDP(win_set, lose_set, doubt_set)
     
     # ------------------------------------------------------------
     # STATISTICAL - QUANTITATIVE
@@ -388,6 +479,6 @@ class gramPrintListener(gramListener):
         return
     
     
-    """ -----------------------------
-         REINFORCEMENT LEARNING
-    ------------------------------"""
+    """------------------------------------------------------------
+                        REINFORCEMENT LEARNING
+    ------------------------------------------------------------"""

@@ -494,7 +494,7 @@ class MainWindow(QMainWindow):
         if not self.model:
             print(Fore.LIGHTRED_EX + "No model loaded!" + Style.RESET_ALL)
             return
-        rows, desc, cols = self.model.get_matrix()
+        rows, desc, cols = self.model.get_matrix_mix()
         print(Fore.LIGHTBLUE_EX + "\n----------------- Transition Matrix -----------------" + Style.RESET_ALL)
         print("Columns :", cols)
         for d, row in zip(desc, rows):
