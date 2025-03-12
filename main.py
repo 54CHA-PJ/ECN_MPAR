@@ -281,6 +281,7 @@ class MainWindow(QMainWindow):
         self.probabilityButton.clicked.connect(self.probability_analysis)
         self.hideProbabilityButton = QPushButton("Hide Probabilities")
         self.hideProbabilityButton.clicked.connect(self.hide_probabilities)
+        self.hideProbabilityButton.hide()  # Hide the button by default
     
         # Simulation
         self.simulateButton = QPushButton("Launch Simulation!")
@@ -422,10 +423,13 @@ class MainWindow(QMainWindow):
         self.model.state_prob = state_prob
         # Update the graph to show the new probabilities
         self.canvas.plot_model(self.model)
+        # Show the button to hide the probabilities
+        self.hideProbabilityButton.show() 
         
     def hide_probabilities(self):
         self.model.state_prob = {}
         self.canvas.plot_model(self.model)
+        self.hideProbabilityButton.hide() 
 
     # --------------------
     # Simulation
