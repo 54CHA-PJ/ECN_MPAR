@@ -4,8 +4,28 @@ from antlr4 import *
 from gramListener import gramListener
 from gramParser import gramParser
 import numpy as np
+from tqdm import tqdm
 
 class gramPrintListener(gramListener):
+    """
+
+    - MODEL CREATION         : states, actions, transitions, rewards
+    
+    - MODEL VISUALIZATION    : check, describe, get_matrix
+    
+    - PROBABILITY OF WINNING :
+        - PROBABILITY - SYMBOLIC     : proba_symbolic_MC, proba_symbolic_MDP, proba_symbolic
+        - PROBABILITY - ITERATIVE    : proba_iterative
+        - STATISTICAL - QUANTITATIVE : simulate_one_path, proba_statistical_quantitative
+        - STATISTICAL - QUALITATIVE  : proba_statistical_quanlitative
+        
+    - REINFORCEMENT LEARNING : TODO
+    """
+    
+    """ -----------------------------
+             MODEL CREATION
+    ------------------------------"""
+    
     def __init__(self):
         super().__init__()
         self.states = []
@@ -42,6 +62,10 @@ class gramPrintListener(gramListener):
         dep = ids.pop(0)
         weights = [int(str(x)) for x in ctx.INT()]
         self.transitions.append(("MC", dep, None, ids, weights))
+        
+    """ -----------------------------
+          MODEL VISUALIZATION
+    ------------------------------"""
 
     def validate(self):
         valid = True
@@ -89,6 +113,7 @@ class gramPrintListener(gramListener):
         for t in self.transitions:
             print("   ", t)
         print(Fore.LIGHTBLUE_EX + "-----------------------------------------------------" + Style.RESET_ALL)
+        
 
     def get_matrix(self):
         # Build transition matrix for printing in the UI
@@ -106,6 +131,10 @@ class gramPrintListener(gramListener):
             desc.append(label)
             rows.append(row)
         return rows, desc, state_list
+        
+    """ -----------------------------
+         PROBABILITY OF WINNING
+    ------------------------------"""
 
     def get_state_analysis(self, initial_win_states=["S0"]):
         # Classify states as winning, losing, or uncertain
@@ -152,11 +181,15 @@ class gramPrintListener(gramListener):
         incertitude = [s for s in self.states if s not in win_states and s not in lose_states]
         return win_states, lose_states, incertitude
 
-    def proba_symbolic_MC(self, win_set, doubt_set):
+    # ------------------------------------------------------------
+    # PROBABILITY - SYMBOLIC APPROACH 
+    # ------------------------------------------------------------
+
+    def proba_symbolic_MC(self, win_set, lose_set, doubt_set):
         """
-        MC: Solve (I-A)x=b to get win probabilities for uncertain states.
-        A: matrix of transition probabilities among uncertain states.
-        b: vector of probabilities to win states.
+        MC: Solve (I-A)x=b to get win probabilities for uncertain states (doubt_set)
+        A: matrix of transition probabilities in doubt_set
+        b: vector of direct win probabilities from uncertain states
         """
         n = len(doubt_set)
         if n == 0:
@@ -181,16 +214,8 @@ class gramPrintListener(gramListener):
                     A[i, j] += prob
                 elif d in win_set:
                     b[i] += prob
-        print(Fore.LIGHTBLUE_EX + "\n--- Symbolic MC Transition Matrix ---" + Style.RESET_ALL)
-        print("Matrix A:")
-        print(A)
-        print("Vector b:")
-        print(b)
         I_minus_A = np.eye(n) - A
         x = np.linalg.solve(I_minus_A, b)
-        print("Solution x:")
-        for s, prob in zip(doubt_set, x):
-            print(f"{s}: {prob:.4f}")
         return x
 
     def proba_symbolic_MDP(self, win_set, lose_set, doubt_set):
@@ -232,45 +257,38 @@ class gramPrintListener(gramListener):
                     best_row = row
             A[i, :] = best_row
             b[i] = best_r
-        print(Fore.LIGHTBLUE_EX + "\n--- Symbolic MDP Transition Matrix (Selected Actions) ---" + Style.RESET_ALL)
-        print("Matrix A:")
-        print(A)
-        print("Vector b:")
-        print(b)
         I_minus_A = np.eye(n) - A
         x = np.linalg.solve(I_minus_A, b)
-        print("Solution x:")
-        for s, prob in zip(doubt_set, x):
-            print(f"{s}: {prob:.4f}")
         return x
 
-    def proba_symbolic(self, win_set, incertitude):
-        # Dispatcher: choose MC or MDP method based on transitions present
+    def proba_symbolic(self, win_set, lose_set, doubt_set):
+        # Check if there is any MDP transition or not
         has_mdp = any(t[0] == "MDP" for t in self.transitions)
         if not has_mdp:
-            return self.proba_symbolic_MC(win_set, incertitude)
+            return self.proba_symbolic_MC(win_set, lose_set, doubt_set)
         else:
-            w, l, d = self.get_state_analysis(win_set)
-            return self.proba_symbolic_MDP(w, l, d)
+            return self.proba_symbolic_MDP(win_set, lose_set, doubt_set)
         
-# ITERATIVE APPROACH
+    # ------------------------------------------------------------
+    # PROBABILITY - ITERATIVE APPROACH 
+    # ------------------------------------------------------------
 
-    def proba_iterative(self, win_set, doubt_set):
+    def proba_iterative(self, win_set, lose_set, doubt_set):
         """
-        Iterative approach: Begin with known values (win=1, lose=0) and update
-        uncertain states until convergence. For MC states, update via the weighted sum;
-        for MDP states, update via the minimum over actions.
+        Iterative approach: 
+         - Begin with known values (win=1, lose=0) and update uncertain states until convergence. 
+            - For MC states, update via the weighted sum
+            - For MDP states, update via the minimum over actions.
         """
-        win, lose, inc = self.get_state_analysis(win_set)
         # Initialize value function V(s)
-        V = {s: (1.0 if s in win else 0.0 if s in lose else 0.0) for s in self.states}
+        V = {s: (1.0 if s in win_set else 0.0 if s in lose_set else 0.0) for s in self.states}
         max_iter = 1000
         tol = 1e-8
         for it in range(max_iter):
             delta = 0.0
             # Update every uncertain state (states not in win or lose)
             for s in self.states:
-                if s in win or s in lose:
+                if s in win_set or s in lose_set:
                     continue
                 transitions_from_s = [t for t in self.transitions if t[1] == s]
                 if not transitions_from_s:
@@ -305,14 +323,71 @@ class gramPrintListener(gramListener):
                 V[s] = new_val
             if delta < tol:
                 break
-        print(Fore.LIGHTBLUE_EX + "\n--- Iterative Probabilities ---" + Style.RESET_ALL)
-        for s in self.states:
-            print(f"{s}: {V[s]:.4f}")
         # Return the probabilities for the uncertain states in the order provided
         return [V[s] for s in doubt_set]
     
-# STATISTICAL APPROACH
+    # ------------------------------------------------------------
+    # STATISTICAL - QUANTITATIVE
+    # ------------------------------------------------------------
+    
+    def simulate_one_path(self, win_set, lose_set, initial_state="S0"):
+        """ Simulate one path from initial_state to a win or lose state """
+        current_state = initial_state
+        while True:
+            transitions = [t for t in self.transitions if t[1] == current_state]
+            t_type = transitions[0][0]
+            # Pour MC
+            if t_type == "MC":
+                # Normaliser les poids pour obtenir des probabilités
+                weights = transitions[0][4]
+                total = sum(weights)
+                probabilities = [w / total for w in weights]
+                # Choix aléatoire de l'état suivant
+                next_state = np.random.choice(transitions[0][3], p=probabilities)
+            # Pour MDP
+            else:
+                # Choix aléatoire de l'action
+                actions = {t[2]: t for t in transitions}
+                action = np.random.choice(list(actions.keys()))
+                # Normaliser les poids pour obtenir des probabilités
+                weights = actions[action][4]
+                total = sum(weights)
+                probabilities = [w / total for w in weights]
+                # Choix aléatoire de l'état suivant
+                next_state = np.random.choice(actions[action][3], p=probabilities)
+            if next_state in win_set:
+                return True
+            if next_state in lose_set:
+                return False
+            current_state = next_state
+    
+    def proba_statistical_quantitative(self, win_set, lose_set, doubt_set, epsilon, delta):
+        # Calcul du nombre de simulations requis à partir de la borne de Chernoff–Hoeffding
+        N = int(np.ceil((np.log(2) - np.log(delta)) / ((2 * epsilon) ** 2)))
+        print(f"[STATS] [ ε = {epsilon} | δ = {delta} ] -> {N} Simulations")
+        # On récupère l'ensemble des états perdants (pour simulation) à partir de l'analyse
+        _, lose_set, _ = self.get_state_analysis(win_set)
+        prob_estimates = {}
+        # On simule N fois pour chaque état incertain
+        for state in doubt_set:
+            wins = 0
+            for _ in tqdm(range(N), desc=f"Simulations en cours ..."):
+                if self.simulate_one_path(win_set, lose_set, initial_state=state):
+                    wins += 1
+            prob = wins / N
+            prob_estimates[state] = prob
+            print(f"État {state} : probabilité de gagner ≈ {prob:.4f}")
+        
+        return [prob_estimates[state] for state in doubt_set]
+    
+    # ------------------------------------------------------------
+    # STATISTICAL - QUALITATIVE
+    # ------------------------------------------------------------
 
-    def proba_statistical(self, win_set, doubt_set, trials=10000):
-        print("[Statistical] Not implemented yet. Returning dummy zeros.")
-        return np.zeros(len(doubt_set))
+    def proba_statistical_qualitative(self):
+        return
+    
+    
+    """ -----------------------------
+         REINFORCEMENT LEARNING
+    ------------------------------"""

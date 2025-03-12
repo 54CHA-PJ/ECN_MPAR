@@ -84,7 +84,7 @@ class PlotCanvas(FigureCanvas):
         G = nx.MultiDiGraph()
         for (t_type, dep, act, dests, weights) in model.transitions:
             total = sum(weights)
-            probs = [w / total if total else 0 for w in weights]
+            probs = [win_set / total if total else 0 for win_set in weights]
             color = 'blue' if t_type == "MDP" else 'red'
             for p, dest in zip(probs, dests):
                 label = f"[{act}]\n{p:.2f}" if act else f"{p:.2f}"
@@ -247,7 +247,8 @@ class PlotCanvas(FigureCanvas):
                     
                 fontsize = 12 if node == "S0" else 8
                 self.ax.text(x - 0.5, y - 0.5, text_str, 
-                             color=color, fontweight=fontweight, fontsize=fontsize)
+                             color=color, fontweight=fontweight, fontsize=fontsize,
+                             path_effects=[PathEffects.withStroke(linewidth=3, foreground="white")])
 # -----------------------------------------------------------------
 # MAIN WINDOW
 # -----------------------------------------------------------------
@@ -353,41 +354,70 @@ class MainWindow(QMainWindow):
         text, ok = QInputDialog.getText( self, "Win States", "Enter win state(s), separate using \',\' :" )
         if not ok or not text.strip():
             return 
-        win_states = [s.strip() for s in text.split(",") if s.strip()]
+        win_states_initial = [s.strip() for s in text.split(",") if s.strip()]
         # 2. Compute state analysis
-        w, l, inc = self.model.get_state_analysis(win_states)
+        win_set, lose_set, doubt_set = self.model.get_state_analysis(win_states_initial)
         print(Fore.LIGHTRED_EX + "\n-------------- Probability Calculation --------------" + Style.RESET_ALL)
-        print(Fore.LIGHTRED_EX + f"Win States :  {Style.RESET_ALL}{w}")
-        print(Fore.LIGHTRED_EX + f"Lose States : {Style.RESET_ALL}{l}")
-        print(Fore.LIGHTRED_EX + f"Incertitude : {Style.RESET_ALL}{inc}")
+        print(Fore.LIGHTRED_EX + f"Win States :  {Style.RESET_ALL}{win_set}")
+        print(Fore.LIGHTRED_EX + f"Lose States : {Style.RESET_ALL}{lose_set}")
+        print(Fore.LIGHTRED_EX + f"Incertitude : {Style.RESET_ALL}{doubt_set}")
         # 3. Let user choose which method
-        method_options = ["Symbolic", "Iterative", "Statistical"]
+        method_options = ["Probability - Symbolic", "Probability - Iterative", "Statistical - Quantitative", "Statistical - Qualitative"]
         method, ok2 = QInputDialog.getItem(
-            self, "Probability Method",
+            self, "Probability Calculation Method",
             "Which method ?",
             method_options, 0, False
         )
         if not ok2:
             return 
-        if not inc:
+        if not doubt_set:
             print("\n[PROBA] No incertitude states, no computation needed.")
+            print(Fore.LIGHTRED_EX + "-----------------------------------------------------" + Style.RESET_ALL)
             return
-        # Main function call
-        if method == "Symbolic":
-            probs = self.model.proba_symbolic(w, inc)
-        elif method == "Iterative":
-            probs = self.model.proba_iterative(w, inc)
-        else: 
-            probs = self.model.proba_statistical(w, inc)
-
-        print(Fore.LIGHTMAGENTA_EX + f"Method : {Fore.LIGHTYELLOW_EX}{method}" + Style.RESET_ALL)
-        for st, val in zip(inc, probs):
+        print(Fore.LIGHTMAGENTA_EX + f"Method : {Fore.LIGHTYELLOW_EX}{method}\n" + Style.RESET_ALL)
+        # 4. Main function call
+        if method == "Probability - Symbolic":
+            probs = self.model.proba_symbolic(win_set, lose_set, doubt_set)
+        elif method == "Probability - Iterative":
+            probs = self.model.proba_iterative(win_set, lose_set, doubt_set)
+        elif method == "Statistical - Quantitative":
+            dialog = QDialog(self)
+            dialog.setWindowTitle("SMC Quantitative Parameters")
+            layout = QVBoxLayout(dialog)
+            epsilonLabel = QLabel("Enter precision (epsilon):")
+            epsilonSpin = QDoubleSpinBox()
+            epsilonSpin.setRange(0.0, 1.0)
+            epsilonSpin.setDecimals(4)
+            epsilonSpin.setValue(0.01)
+            deltaLabel = QLabel("Enter error rate (delta):")
+            deltaSpin = QDoubleSpinBox()
+            deltaSpin.setRange(0.0, 1.0)
+            deltaSpin.setDecimals(4)
+            deltaSpin.setValue(0.01)
+            layout.addWidget(epsilonLabel)
+            layout.addWidget(epsilonSpin)
+            layout.addWidget(deltaLabel)
+            layout.addWidget(deltaSpin)
+            buttonBox = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+            layout.addWidget(buttonBox)
+            buttonBox.accepted.connect(dialog.accept)
+            buttonBox.rejected.connect(dialog.reject)
+            if dialog.exec_() != QDialog.Accepted:
+                return
+            epsilon = epsilonSpin.value()
+            delta = deltaSpin.value()
+            probs = self.model.proba_statistical_quantitative(win_set, lose_set, doubt_set, epsilon, delta)
+        else:
+            print(Fore.LIGHTRED_EX + "Method not implemented yet." + Style.RESET_ALL)
+            return
+        # 5. Show results
+        print(Fore.LIGHTMAGENTA_EX + f"RESULTS : {Fore.LIGHTYELLOW_EX}{method}" + Style.RESET_ALL)
+        for st, val in zip(doubt_set, probs):
             print(f"   - {Fore.LIGHTYELLOW_EX}{st}{Style.RESET_ALL} : {val:.4f}")
         print(Fore.LIGHTRED_EX + "-----------------------------------------------------" + Style.RESET_ALL)
-        # Build full state probability dictionary: win=1, lose=0, inc from computed vector.
-        state_prob = {s: 1.0 for s in w}
-        state_prob.update({s: 0.0 for s in l})
-        for s, p in zip(inc, probs):
+        state_prob = {s: 1 for s in win_set}
+        state_prob.update({s: 0 for s in lose_set})
+        for s, p in zip(doubt_set, probs):
             state_prob[s] = p
         self.model.state_prob = state_prob
         # Update the graph to show the new probabilities
