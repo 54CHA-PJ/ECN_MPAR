@@ -293,50 +293,91 @@ class gramPrintListener(gramListener):
             elif x_sol[i] > 1-(1e-8): x_sol[i] = 1
         return [x_sol[d_idx[s]] for s in doubt_list]
 
-
     def proba_symbolic_MDP(self, win_set, lose_set, doubt_set):
         """
-        Solve MDP probability (symbolic) using linprog for max reachability.
+        Solve MDP maximum reachability probabilities purely via linprog, *without* integer variables.
+        
+        We impose x(s) >= sum_{w in W} P(s->w) + sum_{d in doubt} P(s->d)*x(d)
+        for EVERY action of s.
+        Then we do 0 <= x(s) <= 1 for each s in doubt_set.
+        Finally, we *minimize* sum_{s in doubt_set} x(s).
+        
+        The minimal feasible x(s) is forced to match the best action's outcome
+        in each state. This yields the same result as your iterative approach.
         """
-        # If no uncertain states, it is already solved
         if not doubt_set:
             return []
-        M, _ = self.get_matrix_MDP()                        # Transition matrix
-        A_count = len(self.actions)                         # Number of actions
-        doubt_list = list(doubt_set)                        # List of doubt states
-        d_idx = {s: i for i, s in enumerate(doubt_list)}                            # Index of each doubt state
-        w_index = {self.states.index(s) for s in win_set if s in self.states}       # Index of win states
-        # Build inequality constraints :
-        # (I-M)x >= 0
-        # x(s) - sum_{j in doubt} M[s,j]* x(j) >= 0
+
+        # 1) Get the row-major MDP matrix from your existing helper.
+        #    M has one row per (state, action) pair, and one column per state.
+        M, desc = self.get_matrix_MDP()
+        A_count = len(self.actions)
+        doubt_list = list(doubt_set)
+        d_idx = {s: i for i, s in enumerate(doubt_list)}  # map from state -> index in x-vector
+
+        # Indices of winning states in the matrix
+        w_index = [self.states.index(s) for s in win_set if s in self.states]
+
+        # 2) Build the ">= constraints" for each doubt state s, for each action
+        #
+        #    We want:
+        #    x(s) >= sum_{w in W} M[row, w] + sum_{d in doubt} M[row, d]* x(d)
+        #    for each action row = (s, a)
+        #
+        #    In "A_ub * x <= b_ub" form, that becomes:
+        #    - x(s) + sum_{d in doubt} [M[row, d]* x(d)] <= - sum_{w in W} M[row, w]
+        #
+        #    We'll have one such inequality for each (s, a).
         A_ub = []
         b_ub = []
         for s in doubt_list:
-            si = self.states.index(s)
+            s_index = self.states.index(s)
+            row_base = s_index * A_count  # row offset in M for that state
+            # For each action a
             for a_idx in range(A_count):
-                row = si*A_count + a_idx
-                lhs = [0]*len(doubt_list)
-                for s2 in doubt_list:
-                    j = self.states.index(s2)
-                    lhs[d_idx[s2]] += M[row, j]
+                row = row_base + a_idx
+                lhs = [0]*len(doubt_list)  # Coeffs for x(d) in doubt
+                # Add the coefficient of x(d) = M[row, d]
+                for d in doubt_list:
+                    dcol = self.states.index(d)
+                    lhs[d_idx[d]] += M[row, dcol]
+                # Now the coefficient of x(s) is -1 => - x(s)
                 lhs[d_idx[s]] -= 1
-                sumW = sum(M[row, wj] for wj in w_index)
+
+                # Right-hand side is - sum_{w in W} M[row, w]
+                sumW = sum(M[row, wcol] for wcol in w_index)
                 A_ub.append(lhs)
                 b_ub.append(-sumW)
-        # Bounds of the variables (probabilities)
-        bounds = [(0,1)]*len(doubt_list)
-        # Objective : optimization (c=-1) 
-        c = [-1]*len(doubt_list)
-        # Solve using LINPROG
+
+        # 3) Bounds: x(s) in [0,1] for each s in doubt
+        bounds = [(0, 1)] * len(doubt_list)
+
+        # 4) Objective: "minimize sum_{s in doubt} x(s)"
+        #    => c = [1,1,...,1], so we do a normal min LP
+        c = [1.0]*len(doubt_list)
+
+        # 5) Solve with linprog
+        from scipy.optimize import linprog
         res = linprog(c, A_ub=A_ub, b_ub=b_ub, bounds=bounds, method="highs")
+
         if not res.success:
-            return [0]*len(doubt_list)
+            print(f"{Fore.LIGHTRED_EX}[ERROR]{Style.RESET_ALL} Symbolic MDP approach failed: {res.message}")
+            # Return zero if infeasible
+            return [0.0]*len(doubt_list)
+
         x_sol = res.x
-        # Round to 0 or 1 if close enough
+
+        # Optionally clamp near 0 or 1 if floating rounding
         for i in range(len(x_sol)):
-            if x_sol[i] < 1e-8: x_sol[i] = 0
-            elif x_sol[i] > 1-(1e-8): x_sol[i] = 1
+            if abs(x_sol[i]) < 1e-9:
+                x_sol[i] = 0.0
+            elif abs(x_sol[i] - 1.0) < 1e-9:
+                x_sol[i] = 1.0
+
+        # Return the probabilities for each state in the order of doubt_list
         return [x_sol[d_idx[s]] for s in doubt_list]
+
+
 
     def proba_symbolic(self, win_set, lose_set, doubt_set):
         # Check if there is any MDP transition or not

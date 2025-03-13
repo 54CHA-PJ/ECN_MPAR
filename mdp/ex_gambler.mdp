@@ -1,0 +1,14 @@
+States S0, S1, S2, W, L;
+Actions bet1, bet2;
+
+S0[bet1] -> 2:S1 + 2:L;
+S0[bet2] -> 2:S2 + 2:L;
+
+S1[bet1]-> 2:S2 + 2:S0;
+S1[bet2]-> 2:W + 2:L;
+
+S2[bet1]-> 2:W + 2:S1;
+S2[bet2]-> 2:W + 2:S0;
+
+W->1:W;
+L->1:L;

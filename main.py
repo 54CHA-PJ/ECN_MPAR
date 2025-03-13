@@ -84,11 +84,19 @@ class PlotCanvas(FigureCanvas):
         G = nx.MultiDiGraph()
         for (t_type, dep, act, dests, weights) in model.transitions:
             total = sum(weights)
-            probs = [win_set / total if total else 0 for win_set in weights]
+            probs = [w / total if total else 0 for w in weights]
             color = 'blue' if t_type == "MDP" else 'red'
             for p, dest in zip(probs, dests):
                 label = f"[{act}]\n{p:.2f}" if act else f"{p:.2f}"
-                G.add_edge(dep, dest, label=label, color=color, arrow_type=t_type)
+                # Store the action separately in the edge data so we can distinguish edges with the same (dep, dest) but different actions
+                G.add_edge(
+                    dep,
+                    dest,
+                    label=label,
+                    color=color,
+                    arrow_type=t_type,
+                    action=act
+                )
         return G
 
     def get_positions(self, G, states, layer_distance=3, root_name="S0"):
@@ -131,64 +139,98 @@ class PlotCanvas(FigureCanvas):
     # AUXILIARY FUNCTIONS : EDGES
     # ------------------------------
     
-    def draw_better_edges(self, G, pos):
-        """  Draw edges with small arcs and labels with a white contour """
+    def draw_grouped_edges(self, G, pos, u, v, eds, highlight_edge=None, highlight_width=3):
+        """
+        Draw a group of edges from u->v (or a loop on u), possibly highlighting
+        one specific edge. We now also check the 'action' so that only the exact
+        chosen edge is highlighted (if multiple edges exist between the same pair).
+        """
+        base_offset = 0.33
+        fixed_curvature = 0.3
+
+        # If it's a loop edge
+        if u == v:
+            for d in eds:
+                # Determine if this edge is the chosen one
+                chosen_edge = (
+                    highlight_edge
+                    and highlight_edge[0] == d.get('arrow_type')  # t_type
+                    and highlight_edge[1] == u                   # from-state
+                    and highlight_edge[2] == d.get('action')     # action
+                    and highlight_edge[3] == v                   # to-state
+                )
+
+                nx.draw_networkx_edges(
+                    G, pos, edgelist=[(u, v)],
+                    edge_color=[d['color']],
+                    connectionstyle=f'arc3, rad={fixed_curvature}',
+                    arrows=True, arrowstyle='-|>', arrowsize=15,
+                    ax=self.ax,
+                    width=(highlight_width if chosen_edge else 1)
+                )
+                x, y = pos[u]
+                self.ax.text(x, y + 0.3, "⟳ " + d['label'], fontsize=7,
+                             color=d['color'], ha='center', va='center',
+                             path_effects=[PathEffects.withStroke(linewidth=2, foreground="white")])
+        else:
+            # Non-loop edges
+            offs = [((i - (len(eds) - 1) / 2) * base_offset) for i in range(len(eds))]
+            opp = ((v, u) in G.edges())  # Check if there's an opposing edge v->u
+            for i, d in enumerate(eds):
+                off = offs[i]
+                if d.get('arrow_type') == "MC":
+                    off = -off
+                if opp and u > v:
+                    off += base_offset if off >= 0 else -base_offset
+
+                # Now check action in addition to arrow_type, from-state, to-state
+                chosen_edge = (
+                    highlight_edge
+                    and highlight_edge[0] == d.get('arrow_type')  # t_type
+                    and highlight_edge[1] == u                   # from-state
+                    and highlight_edge[2] == d.get('action')     # action
+                    and highlight_edge[3] == v                   # to-state
+                )
+
+                color = d['color']
+                nx.draw_networkx_edges(
+                    G, pos, edgelist=[(u, v)],
+                    edge_color=[color],
+                    arrows=True, arrowstyle='-|>', arrowsize=15,
+                    connectionstyle=f'arc3, rad={off}',
+                    ax=self.ax,
+                    width=(highlight_width if chosen_edge else 1)
+                )
+                x1, y1 = pos[u]
+                x2, y2 = pos[v]
+                t = 0.3
+                xm = x1 + t * (x2 - x1)
+                ym = y1 + t * (y2 - y1)
+                dx, dy = x2 - x1, y2 - y1
+                dist = np.sqrt(dx**2 + dy**2) or 1
+                perp = (dy/dist, -dx/dist)
+                self.ax.text(xm + off * perp[0], ym + off * perp[1],
+                             d['label'], fontsize=7, color=color,
+                             ha='center', va='center',
+                             path_effects=[PathEffects.withStroke(linewidth=3, foreground="white")])
+
+    def draw_better_edges(self, G, pos, highlight_edge=None):
+        """ Draw edges with small arcs, labels with a white contour, and optional highlighting """
+        # Group edges from u->v
         groups = {}
         for u, v, d in G.edges(data=True):
             groups.setdefault((u, v), []).append(d)
-        base_offset = 0.33
-        opp = {(u, v) for (u, v) in groups if (v, u) in groups}
 
+        # Draw each group with our unified function
         for (u, v), eds in groups.items():
-            if u == v:
+            self.draw_grouped_edges(G, pos, u, v, eds, highlight_edge=highlight_edge)
 
-                fixed_curvature = 0.3  
-                for d in eds:
-                    nx.draw_networkx_edges(
-                        G, pos, edgelist=[(u, v)],
-                        edge_color=[d['color']],
-                        connectionstyle=f'arc3, rad={fixed_curvature}',
-                        arrows=True, arrowstyle='-|>', arrowsize=15,
-                        ax=self.ax
-                    )
-                    x, y = pos[u]
-                    self.ax.text(x, y + 0.3, "⟳ " + d['label'], fontsize=7,
-                                 color=d['color'], ha='center', va='center',
-                                 path_effects=[PathEffects.withStroke(linewidth=2, foreground="white")])
-
-            else:
-                # --- Non-loop edges ---
-                offs = [((i - (len(eds) - 1) / 2) * base_offset) for i in range(len(eds))]
-                adjust = ((u, v) in opp) and (u > v)
-                for off, d in zip(offs, eds):
-                    cur = -off if d.get('arrow_type') == "MC" else off
-                    if adjust:
-                        cur += base_offset if cur >= 0 else -base_offset
-                    nx.draw_networkx_edges(
-                        G, pos, edgelist=[(u, v)],
-                        edge_color=[d['color']],
-                        arrows=True, arrowstyle='-|>', arrowsize=15,
-                        connectionstyle=f'arc3, rad={cur}', ax=self.ax
-                    )
-                    x1, y1 = pos[u]
-                    x2, y2 = pos[v]
-                    # Place label closer to the source (using t = 0.3 along the edge)
-                    t = 0.3
-                    xm = x1 + t * (x2 - x1)
-                    ym = y1 + t * (y2 - y1)
-                    dx, dy = x2 - x1, y2 - y1
-                    dist = np.sqrt(dx**2 + dy**2) or 1
-                    perp = (dy/dist, -dx/dist)
-                    self.ax.text(xm + cur * perp[0], ym + cur * perp[1],
-                                 d['label'], fontsize=7, color=d['color'],
-                                 ha='center', va='center',
-                                 path_effects=[PathEffects.withStroke(linewidth=3, foreground="white")])
-    
     # ------------------------------
     # AUXILIARY FUNCTION : ANIMATION STEP
-    
+    # ------------------------------
+
     def plot_simulation_state(self, model, current_state, chosen_edge=None):
-        """ Redraws the model and highlights one edge """
+        """ Redraws the model and highlights one edge if chosen """
         self.ax.clear()
         self.ax.axis('off')
         G = self.build_graph(model)
@@ -198,38 +240,10 @@ class PlotCanvas(FigureCanvas):
         node_colors = ['red' if n == current_state else 'lightgray' for n in G.nodes()]
         nx.draw_networkx_nodes(G, pos, node_color=node_colors, ax=self.ax)
         nx.draw_networkx_labels(G, pos, ax=self.ax)
-        self.draw_better_edges(G, pos)
-        if chosen_edge is not None:
-            (t_type, dep, act, dest) = chosen_edge
-            if (dep, dest) in G.edges():
-                groups = {}
-                for u, v, d in G.edges(data=True):
-                    groups.setdefault((u, v), []).append(d)
-                if (dep, dest) in groups:
-                    eds = groups[(dep, dest)]
-                    base_offset = 0.33
-                    offs = [((i - (len(eds) - 1) / 2) * base_offset) for i in range(len(eds))]
-                    opp = (dest, dep) in groups
-                    adjust = (opp and dep > dest)
-                    index = 0
-                    for i, d in enumerate(eds):
-                        if d.get('arrow_type') == t_type:
-                            index = i
-                            break
-                    off = offs[index]
-                    cur = -off if t_type == "MC" else off
-                    if adjust:
-                        cur += base_offset if cur >= 0 else -base_offset
-                    chosen_color = eds[index].get('color', 'red')
-                    nx.draw_networkx_edges(
-                        G, pos,
-                        edgelist=[(dep, dest)],
-                        edge_color=chosen_color,
-                        width=3,
-                        connectionstyle=f'arc3, rad={cur}',
-                        ax=self.ax
-                    )
+        # Now we just call draw_better_edges once, optionally highlighting chosen_edge
+        self.draw_better_edges(G, pos, highlight_edge=chosen_edge)
         self.draw()
+
         
     def plot_proba(self, model, pos):
         """ Show the probability of winning in each state """
