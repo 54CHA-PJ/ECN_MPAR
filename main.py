@@ -40,6 +40,13 @@ class PlotCanvas(FigureCanvas):
         self.fig, self.ax = plt.subplots(figsize=(width, height), dpi=dpi)
         super().__init__(self.fig)
         self.setParent(parent)
+        self.dragging_node = None   # currently dragged node
+        self.pos = {}               # current node positions
+        self.G = None               # current graph
+        # Connect event handlers for interactivity
+        self.mpl_connect('button_press_event', self.on_press)
+        self.mpl_connect('motion_notify_event', self.on_motion)
+        self.mpl_connect('button_release_event', self.on_release)
         self.show_welcome()
 
     def show_welcome(self):
@@ -67,12 +74,44 @@ class PlotCanvas(FigureCanvas):
         """
         self.ax.clear()
         self.ax.axis('off')
-        G = self.build_graph(model)
-        pos = self.get_positions(G, model.states) # Having Model States as a parameter allows to modify the order of appearance
-        nx.draw_networkx_nodes(G, pos, node_color='lightgray', ax=self.ax)
-        nx.draw_networkx_labels(G, pos, ax=self.ax)
-        self.draw_better_edges(G, pos)
-        self.plot_proba(model, pos)
+        self.G = self.build_graph(model)
+        # Save positions so they can be updated interactively
+        self.pos = self.get_positions(self.G, model.states)
+        nx.draw_networkx_nodes(self.G, self.pos, node_color='lightgray', ax=self.ax)
+        nx.draw_networkx_labels(self.G, self.pos, ax=self.ax)
+        self.draw_better_edges(self.G, self.pos)
+        self.plot_proba(model, self.pos)
+        self.draw()
+        
+    # ------------------------------
+    # USER INTERACTIONS
+    # ------------------------------
+        
+    def on_press(self, event):
+        if event.inaxes != self.ax or event.xdata is None or event.ydata is None:
+            return
+        # Look for a node close enough to the click (using a tolerance)
+        tol = 0.2  # adjust tolerance as needed
+        for node, (x, y) in self.pos.items():
+            if (event.xdata - x)**2 + (event.ydata - y)**2 < tol**2:
+                self.dragging_node = node
+                break
+
+    def on_motion(self, event):
+        if not self.dragging_node or event.inaxes != self.ax or event.xdata is None or event.ydata is None:
+            return
+        # Update the position of the selected node
+        self.pos[self.dragging_node] = (event.xdata, event.ydata)
+        # Redraw the graph using the updated positions
+        self.ax.clear()
+        self.ax.axis('off')
+        nx.draw_networkx_nodes(self.G, self.pos, node_color='lightgray', ax=self.ax)
+        nx.draw_networkx_labels(self.G, self.pos, ax=self.ax)
+        self.draw_better_edges(self.G, self.pos)
+        self.draw()
+        
+    def on_release(self, event):
+        self.dragging_node = None
         self.draw()
     
     # ------------------------------
@@ -145,7 +184,7 @@ class PlotCanvas(FigureCanvas):
         one specific edge. We now also check the 'action' so that only the exact
         chosen edge is highlighted (if multiple edges exist between the same pair).
         """
-        base_offset = 0.33
+        base_offset = 0.15
         fixed_curvature = 0.3
 
         # If it's a loop edge
@@ -182,7 +221,6 @@ class PlotCanvas(FigureCanvas):
                     off = -off
                 if opp and u > v:
                     off += base_offset if off >= 0 else -base_offset
-
                 # Now check action in addition to arrow_type, from-state, to-state
                 chosen_edge = (
                     highlight_edge
@@ -191,7 +229,7 @@ class PlotCanvas(FigureCanvas):
                     and highlight_edge[2] == d.get('action')     # action
                     and highlight_edge[3] == v                   # to-state
                 )
-
+                # Draw the edge
                 color = d['color']
                 nx.draw_networkx_edges(
                     G, pos, edgelist=[(u, v)],
@@ -220,7 +258,6 @@ class PlotCanvas(FigureCanvas):
         groups = {}
         for u, v, d in G.edges(data=True):
             groups.setdefault((u, v), []).append(d)
-
         # Draw each group with our unified function
         for (u, v), eds in groups.items():
             self.draw_grouped_edges(G, pos, u, v, eds, highlight_edge=highlight_edge)
@@ -243,7 +280,10 @@ class PlotCanvas(FigureCanvas):
         # Now we just call draw_better_edges once, optionally highlighting chosen_edge
         self.draw_better_edges(G, pos, highlight_edge=chosen_edge)
         self.draw()
-
+        
+    # ------------------------------
+    # Probability / Expectation Plotting
+    # ------------------------------    
         
     def plot_proba(self, model, pos):
         """ Show the probability of winning in each state """
