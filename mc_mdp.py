@@ -39,8 +39,12 @@ class gramPrintListener(gramListener):
         # Process state definitions and assign rewards (default 0 if not provided)
         for sctx in ctx.statedef():
             state_name = sctx.ID().getText()
-            rew = int(sctx.INT().getText()) if sctx.INT() else 0
-            if not sctx.INT():
+            if sctx.NEG_INT():
+                rew = int(sctx.NEG_INT().getText())
+            elif sctx.INT():
+                rew = int(sctx.INT().getText())
+            else:
+                rew = 0
                 self.warning_state_list.append(state_name)
             self.states.append(state_name)
             self.rewards[state_name] = rew
@@ -433,53 +437,60 @@ class gramPrintListener(gramListener):
     def simulate_one_path(self, win_set, lose_set, initial_state="S0"):
         """ Simulate one path from initial_state to a win or lose state """
         current_state = initial_state
+        rewards = self.rewards[initial_state]
         while True:
             transitions = [t for t in self.transitions if t[1] == current_state]
             t_type = transitions[0][0]
-            # Pour MC
+            # For MC transitions:
             if t_type == "MC":
-                # Normaliser les poids pour obtenir des probabilités
                 weights = transitions[0][4]
                 total = sum(weights)
                 probabilities = [w / total for w in weights]
-                # Choix aléatoire de l'état suivant
                 next_state = np.random.choice(transitions[0][3], p=probabilities)
-            # Pour MDP
+                rewards += self.rewards[next_state]
+            # For MDP transitions:
             else:
-                # Choix aléatoire de l'action
                 actions = {t[2]: t for t in transitions}
                 action = np.random.choice(list(actions.keys()))
-                # Normaliser les poids pour obtenir des probabilités
                 weights = actions[action][4]
                 total = sum(weights)
                 probabilities = [w / total for w in weights]
-                # Choix aléatoire de l'état suivant
                 next_state = np.random.choice(actions[action][3], p=probabilities)
+                rewards += self.rewards[next_state]
+                #print("rewards for state ", next_state, " : ", self.rewards[next_state])
             if next_state in win_set:
-                return True
+                return [True, rewards]
             if next_state in lose_set:
-                return False
+                return [False, rewards]
             current_state = next_state
-    
+
     def proba_statistical_quantitative(self, win_set, lose_set, doubt_set, epsilon, delta):
-        # Calcul du nombre de simulations requis à partir de la borne de Chernoff–Hoeffding
+        # Calculate the required number of simulations using the Chernoff–Hoeffding bound
         N = int(np.ceil((np.log(2) - np.log(delta)) / ((2 * epsilon) ** 2)))
         print(f"[STATS] [ ε = {epsilon} | δ = {delta} ] -> {N} Simulations")
-        # On récupère l'ensemble des états perdants (pour simulation) à partir de l'analyse
+        # Update lose_set based on state analysis
         _, lose_set, _ = self.get_state_analysis(win_set)
         prob_estimates = {}
-        # On simule N fois pour chaque état incertain
+        rewards_estimate = {}
+        # Run N simulations for each uncertain state
         for state in doubt_set:
             wins = 0
+            reward = 0
             for _ in tqdm(range(N), desc=f"Simulations en cours ..."):
-                if self.simulate_one_path(win_set, lose_set, initial_state=state):
+                result = self.simulate_one_path(win_set, lose_set, initial_state=state)
+                if result[0]:
                     wins += 1
+                    reward += result[1]
             prob = wins / N
+            rew = reward / N
             prob_estimates[state] = prob
-            print(f"État {state} : probabilité de gagner ≈ {prob:.4f}")
-        
-        return [prob_estimates[state] for state in doubt_set]
-    
+            rewards_estimate[state] = rew
+            print(f"État {state} : probabilité de gagner ≈ {prob:.4f}, gain = {rew:.4f}")
+        # Return both the list of probabilities and the list of expected rewards for all uncertain states
+        probs = [prob_estimates[state] for state in doubt_set]
+        rewards = [rewards_estimate[state] for state in doubt_set]
+        return probs, rewards
+
     # ------------------------------------------------------------
     # STATISTICAL - QUALITATIVE
     # ------------------------------------------------------------

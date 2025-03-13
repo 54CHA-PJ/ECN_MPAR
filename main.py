@@ -322,23 +322,41 @@ class PlotCanvas(FigureCanvas):
     # ------------------------------    
         
     def plot_proba(self, model, pos):
-        """ Show the probability of winning in each state """
+        """
+        Show the probability of winning in each state.
+        Also display the reward below the probability if 'model.state_reward' exists
+        (typically only in 'Statistical - Quantitative' mode).
+        """
         # Draw additional text: winning probability beside each state if available
         if hasattr(model, "state_prob"):
             for node, p in model.state_prob.items():
                 x, y = pos.get(node, (0, 0))
                 fontweight = "bold"
                 if p == 0: 
-                    text_str = "0"  
+                    text_str = "0"
                     color = "red"
                 else:
                     text_str = f"{p:.3f}"
                     color = "green" if node == "S0" else "black"
-                    
                 fontsize = 12 if node == "S0" else 8
-                self.ax.text(x - 0.5, y - 0.5, text_str, 
-                             color=color, fontweight=fontweight, fontsize=fontsize,
-                             path_effects=[PathEffects.withStroke(linewidth=3, foreground="white")])
+                # Probability text
+                self.ax.text(x - 0.5, y - 0.5, text_str,
+                            color=color, fontweight=fontweight, fontsize=fontsize,
+                            path_effects=[PathEffects.withStroke(linewidth=3, foreground="white")])
+
+        # Now, if we have 'model.state_reward', display that just beneath the probability
+        if hasattr(model, "state_reward"):
+            for node, r in model.state_reward.items():
+                x, y = pos.get(node, (0, 0))
+                # We'll display the reward in blue, slightly below the probability text
+                self.ax.text(x - 0.5, y - 0.7, f"R={r:.3f}",
+                            color="blue", fontweight="bold", fontsize=8,
+                            path_effects=[PathEffects.withStroke(linewidth=3, foreground="white")])
+
+# -----------------------------------------------------------------
+# MAIN WINDOW
+# -----------------------------------------------------------------
+
 # -----------------------------------------------------------------
 # MAIN WINDOW
 # -----------------------------------------------------------------
@@ -437,6 +455,7 @@ class MainWindow(QMainWindow):
     # Probability analysis
     
     def probability_analysis(self):
+        rewards = None
         # If no model is loaded
         if not self.model:
             print(Fore.LIGHTRED_EX + "No model loaded!" + Style.RESET_ALL)
@@ -497,27 +516,37 @@ class MainWindow(QMainWindow):
                 return
             epsilon = epsilonSpin.value()
             delta = deltaSpin.value()
-            probs = self.model.proba_statistical_quantitative(win_set, lose_set, doubt_set, epsilon, delta)
+            # Statistical quantitative returns (probs, rewards)
+            probs, rewards = self.model.proba_statistical_quantitative(win_set, lose_set, doubt_set, epsilon, delta)
+            self.model.state_reward = {st: val for (st, val) in zip(doubt_set, rewards)}
+            
         else:
             print(Fore.LIGHTRED_EX + "Method not implemented yet." + Style.RESET_ALL)
             return
         # 5. Show results
-        print(Fore.LIGHTMAGENTA_EX + f"RESULTS : {Fore.LIGHTYELLOW_EX}{method}" + Style.RESET_ALL)
+        print(Fore.LIGHTMAGENTA_EX + f"Probabilities : {Fore.LIGHTYELLOW_EX}{method}" + Style.RESET_ALL)
         for st, val in zip(doubt_set, probs):
             print(f"   - {Fore.LIGHTYELLOW_EX}{st}{Style.RESET_ALL} : {val:.4f}")
+        if rewards and rewards[0] is not None:
+            print(Fore.LIGHTMAGENTA_EX + f"Rewards : {Fore.LIGHTYELLOW_EX}{method}" + Style.RESET_ALL)
+            for st, val in zip(doubt_set, rewards):
+                print(f"   - {Fore.LIGHTYELLOW_EX}{st}{Style.RESET_ALL} : {val:.4f}")
         print(Fore.LIGHTRED_EX + "-----------------------------------------------------" + Style.RESET_ALL)
         state_prob = {s: 1 for s in win_set}
         state_prob.update({s: 0 for s in lose_set})
         for s, p in zip(doubt_set, probs):
             state_prob[s] = p
         self.model.state_prob = state_prob
-        # Update the graph to show the new probabilities
+        # Update the graph to show the new probabilities (and reward if present)
         self.canvas.plot_model(self.model)
         # Show the button to hide the probabilities
         self.hideProbabilityButton.show() 
         
     def hide_probabilities(self):
         self.model.state_prob = {}
+        # Optionally remove reward from the display if needed
+        if hasattr(self.model, "state_reward"):
+            del self.model.state_reward
         self.canvas.plot_model(self.model)
         self.hideProbabilityButton.hide() 
 
@@ -558,7 +587,7 @@ class MainWindow(QMainWindow):
             if t[1] == self.current_state:
                 for dest in t[3]:
                     outgoing.append((t[0], t[1], t[2], dest))
-        # STOP if it's stucked
+        # STOP if it's stuck
         if not outgoing:
             print(f"[SIM] No transitions from {self.current_state}, stopping.")
             self.stop_simulation()
@@ -590,6 +619,8 @@ class MainWindow(QMainWindow):
         for d, row in zip(desc, rows):
             print(d, row)
         print(Fore.LIGHTBLUE_EX + "-----------------------------------------------------" + Style.RESET_ALL)
+
+
 
 # --------------------
 # Main
