@@ -75,17 +75,28 @@ class PlotCanvas(FigureCanvas):
         self.ax.clear()
         self.ax.axis('off')
         self.G = self.build_graph(model)
-        # Save positions so they can be updated interactively
         self.pos = self.get_positions(self.G, model.states)
         nx.draw_networkx_nodes(self.G, self.pos, node_color='lightgray', ax=self.ax)
         nx.draw_networkx_labels(self.G, self.pos, ax=self.ax)
         self.draw_better_edges(self.G, self.pos)
         self.plot_proba(model, self.pos)
+        self.set_fixed_view()
         self.draw()
         
     # ------------------------------
     # USER INTERACTIONS
     # ------------------------------
+        
+    def set_fixed_view(self):
+        """Set fixed axis limits to exactly fill the window."""
+        fixed_limit_x = 7
+        fixed_limit_y = 5
+        # Make the axes fill the entire figure
+        self.ax.set_position([0, 0, 1, 1])
+        self.ax.set_xlim(-fixed_limit_x, fixed_limit_x)
+        self.ax.set_ylim(-fixed_limit_y, fixed_limit_y)
+        self.ax.set_aspect('equal', 'box')
+
         
     def on_press(self, event):
         if event.inaxes != self.ax or event.xdata is None or event.ydata is None:
@@ -108,12 +119,14 @@ class PlotCanvas(FigureCanvas):
         nx.draw_networkx_nodes(self.G, self.pos, node_color='lightgray', ax=self.ax)
         nx.draw_networkx_labels(self.G, self.pos, ax=self.ax)
         self.draw_better_edges(self.G, self.pos)
+        self.set_fixed_view()
         self.draw()
         
     def on_release(self, event):
         self.dragging_node = None
+        self.set_fixed_view()
         self.draw()
-    
+        
     # ------------------------------
     # AUXILIARY FUNCTIONS : STATES
     # ------------------------------
@@ -138,9 +151,10 @@ class PlotCanvas(FigureCanvas):
                 )
         return G
 
-    def get_positions(self, G, states, layer_distance=3, root_name="S0"):
-        """ Compute positions using a hierarchical layout, centered on S0 (by default) """
-        # Define the root node
+    def get_positions(self, G, states, fixed_limit=5, padding=0.15, root_name="S0"):
+        """Compute hierarchical positions scaled to fit within [-fixed_limit, fixed_limit],
+        leaving a fraction 'padding' as margin on each side."""
+        # Define the root node.
         if root_name in states:
             root = root_name
         elif states:
@@ -148,9 +162,9 @@ class PlotCanvas(FigureCanvas):
         else:
             return {}
         pos = {}
-        # Compute shortest-path lengths from root.
+        # Compute shortest-path lengths from the root.
         lengths = nx.single_source_shortest_path_length(G, root)
-        # Group nodes by distance (layer)
+        # Group nodes by layer.
         layers = {}
         for node, dist in lengths.items():
             layers.setdefault(dist, []).append(node)
@@ -159,20 +173,40 @@ class PlotCanvas(FigureCanvas):
         if unreachable:
             layers.setdefault(max(layers.keys()) + 1, []).extend(unreachable)
         sorted_layers = sorted(layers.keys())
-        # Place the root at the center.
+        # Assign positions using unit distance per layer.
         pos[root] = (0, 0)
-        # Place the other nodes in layers around the root.
         for layer in sorted_layers:
             if layer == 0:
                 continue
             nodes = layers[layer]
             n = len(nodes)
             angle_gap = 2 * np.pi / n if n > 0 else 0
-            radius = layer * layer_distance
+            radius = layer  # Use a unit distance per layer.
             for i, node in enumerate(nodes):
                 angle = i * angle_gap
                 pos[node] = (radius * np.cos(angle), radius * np.sin(angle))
-        return pos
+        # Scale and center the positions.
+        xs = [p[0] for p in pos.values()]
+        ys = [p[1] for p in pos.values()]
+        min_x, max_x = min(xs), max(xs)
+        min_y, max_y = min(ys), max(ys)
+        width = max_x - min_x
+        height = max_y - min_y
+        if width == 0 or height == 0:
+            return pos
+        # The full view spans 2*fixed_limit, but we leave a margin.
+        # So, the effective drawing area is reduced by the padding on both sides.
+        effective_width = 2 * fixed_limit * (1 - padding)
+        effective_height = 2 * fixed_limit * (1 - padding)
+        scale = min(effective_width / width, effective_height / height)
+        # Determine the center of the computed positions.
+        center_x = (min_x + max_x) / 2
+        center_y = (min_y + max_y) / 2
+        # Scale and shift positions.
+        scaled_pos = {node: ((x - center_x) * scale, (y - center_y) * scale)
+                    for node, (x, y) in pos.items()}
+        return scaled_pos
+
 
     # ------------------------------
     # AUXILIARY FUNCTIONS : EDGES
@@ -184,33 +218,35 @@ class PlotCanvas(FigureCanvas):
         one specific edge. We now also check the 'action' so that only the exact
         chosen edge is highlighted (if multiple edges exist between the same pair).
         """
-        base_offset = 0.15
-        fixed_curvature = 0.3
-
+        base_offset = 0.2
+        loop_radius = 0.3 
+        
         # If it's a loop edge
         if u == v:
+            # Define a loop radius (increase this value for a bigger loop)
+            
             for d in eds:
                 # Determine if this edge is the chosen one
                 chosen_edge = (
                     highlight_edge
-                    and highlight_edge[0] == d.get('arrow_type')  # t_type
-                    and highlight_edge[1] == u                   # from-state
-                    and highlight_edge[2] == d.get('action')     # action
-                    and highlight_edge[3] == v                   # to-state
+                    and highlight_edge[0] == d.get('arrow_type')
+                    and highlight_edge[1] == u
+                    and highlight_edge[2] == d.get('action')
+                    and highlight_edge[3] == v
                 )
-
-                nx.draw_networkx_edges(
-                    G, pos, edgelist=[(u, v)],
-                    edge_color=[d['color']],
-                    connectionstyle=f'arc3, rad={fixed_curvature}',
-                    arrows=True, arrowstyle='-|>', arrowsize=15,
-                    ax=self.ax,
-                    width=(highlight_width if chosen_edge else 1)
-                )
+                lw = highlight_width if chosen_edge else 1
+                # Draw a full circle (arc) around the node at pos[u]
                 x, y = pos[u]
-                self.ax.text(x, y + 0.3, "⟳ " + d['label'], fontsize=7,
-                             color=d['color'], ha='center', va='center',
-                             path_effects=[PathEffects.withStroke(linewidth=2, foreground="white")])
+                arc = patches.Arc((x, y), 2 * loop_radius, 2 * loop_radius,
+                                theta1=0, theta2=360,
+                                edgecolor=d['color'], lw=lw)
+                self.ax.add_patch(arc)
+                # Optional: Draw an arrowhead manually if desired.
+                # For now, we simply draw a label offset above the loop.
+                self.ax.text(x, y + loop_radius + 0.2, "⟳ " + d['label'], fontsize=7,
+                            color=d['color'], ha='center', va='center',
+                            path_effects=[PathEffects.withStroke(linewidth=2, foreground="white")])
+
         else:
             # Non-loop edges
             offs = [((i - (len(eds) - 1) / 2) * base_offset) for i in range(len(eds))]
