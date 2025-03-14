@@ -481,11 +481,13 @@ class gramPrintListener(gramListener):
                 if result[0]:
                     wins += 1
                     reward += result[1]
+                else:
+                    reward += result[1]
             prob = wins / N
             rew = reward / N
             prob_estimates[state] = prob
             rewards_estimate[state] = rew
-            print(f"État {state} : probabilité de gagner ≈ {prob:.4f}, gain = {rew:.4f}")
+            print(f"État {state} : probarewardsbilité de gagner ≈ {prob:.4f}, gain = {rew:.4f}")
         # Return both the list of probabilities and the list of expected rewards for all uncertain states
         probs = [prob_estimates[state] for state in doubt_set]
         rewards = [rewards_estimate[state] for state in doubt_set]
@@ -495,9 +497,74 @@ class gramPrintListener(gramListener):
     # STATISTICAL - QUALITATIVE
     # ------------------------------------------------------------
 
-    def proba_statistical_qualitative(self):
-        return
-    
+    def proba_statistical_qualitative(self, win_set, lose_set, doubt_set,
+                                    theta=0.5, epsilon=0.05,
+                                    alpha=0.05, beta=0.05,
+                                    max_sims=10000):
+        """
+        - Effectue un test d'hypothèses qualitatif (Sequential Probability Ratio Test, SPRT)
+        pour décider si la probabilité de gagner (gamma) depuis chaque état incertain est >= (theta + epsilon)
+        ou < (theta - epsilon), en délimitant les erreurs de type I/II par alpha et beta.
+
+        Hypothèses testées :
+        - H0 : gamma >= gamma0 = theta + epsilon
+        - H1 : gamma <  gamma1 = theta - epsilon
+
+        Si gamma ∈ [gamma1, gamma0], le test peut s'arrêter sur n'importe quel verdict.
+
+        On suit la méthode SPRT pour un processus de Bernoulli (succès/échec) :
+        - SPRT_threshold_A = (1 - beta) / alpha
+        - SPRT_threshold_B = beta / (1 - alpha)
+        - Si le ratio de vraisemblance R_m >= SPRT_threshold_A, on accepte H1 (gamma < gamma1)
+        - Si R_m <= SPRT_threshold_B, on accepte H0 (gamma >= gamma0)
+        - Sinon, on continue jusqu'à max_sims
+        """
+        # Définition de la région d'indifférence
+        gamma_1 = max(0.0, theta - epsilon)  # borne basse (gamma1)
+        gamma_0 = min(1.0, theta + epsilon)  # borne haute (gamma0)
+        # Bornes du SPRT
+        SPRT_threshold_A = (1.0 - beta) / alpha
+        SPRT_threshold_B = beta / (1.0 - alpha)
+        probability_estimates = {}
+        reward_estimates = {}
+        # Pour chaque état incertain, on effectue un test séquentiel SPRT
+        for state in doubt_set:
+            print(f"\n[QUAL] Test SPRT pour l'état {state} :")
+            win_count = 0                # Compteur de réussites (victoires)
+            cumulative_reward = 0        # Somme des récompenses cumulées
+            test_verdict = "Non-concluant"
+            # Effectue les simulations jusqu'à max_sims ou jusqu'à obtention d'un verdict
+            for simulation_index in range(1, max_sims + 1):
+                is_win, obtained_reward = self.simulate_one_path(win_set, lose_set, initial_state=state)
+                cumulative_reward += obtained_reward
+                if is_win:
+                    win_count += 1
+                # Calcul du log du ratio de vraisemblance pour éviter l'underflow
+                log_numerator = win_count * np.log(gamma_1) + (simulation_index - win_count) * np.log(1.0 - gamma_1)
+                log_denominator = win_count * np.log(gamma_0) + (simulation_index - win_count) * np.log(1.0 - gamma_0)
+                log_ratio = log_numerator - log_denominator
+                likelihood_ratio = np.exp(log_ratio) if log_ratio > -30 else 0.0  # éviter exp(-inf)
+                # Prise de décision SPRT
+                if likelihood_ratio >= SPRT_threshold_A:
+                    test_verdict = "H1 accepté"  # gamma < gamma_1
+                    print(f"   => [SPRTest] simulation_index={simulation_index}, likelihood_ratio={likelihood_ratio:.4e}, on accepte H1 (gamma < {gamma_1:.3f})")
+                    break
+                elif likelihood_ratio <= SPRT_threshold_B:
+                    test_verdict = "H0 accepté"  # gamma >= gamma_0
+                    print(f"   => [SPRTest] simulation_index={simulation_index}, likelihood_ratio={likelihood_ratio:.4e}, on accepte H0 (gamma >= {gamma_0:.3f})")
+                    break
+            if test_verdict == "Non-concluant":
+                print(f"   => [SPRTest] Aucune conclusion après {max_sims} simulations.")
+            effective_simulations = simulation_index 
+            win_probability = win_count / effective_simulations
+            average_reward = cumulative_reward / effective_simulations
+            probability_estimates[state] = win_probability
+            reward_estimates[state] = average_reward
+        # Construit les listes ordonnées selon doubt_set
+        probs = [probability_estimates[state] for state in doubt_set]
+        rewards = [reward_estimates[state] for state in doubt_set]
+        return probs, rewards
+
     
     """------------------------------------------------------------
                         REINFORCEMENT LEARNING

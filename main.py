@@ -75,7 +75,8 @@ class PlotCanvas(FigureCanvas):
         self.ax.clear()
         self.ax.axis('off')
         self.G = self.build_graph(model)
-        self.pos = self.get_positions(self.G, model.states)
+        if not self.pos:
+            self.pos = self.get_positions(self.G, model.states)
         nx.draw_networkx_nodes(self.G, self.pos, node_color='lightgray', ax=self.ax)
         nx.draw_networkx_labels(self.G, self.pos, ax=self.ax)
         self.draw_better_edges(self.G, self.pos)
@@ -306,15 +307,12 @@ class PlotCanvas(FigureCanvas):
         """ Redraws the model and highlights one edge if chosen """
         self.ax.clear()
         self.ax.axis('off')
-        G = self.build_graph(model)
-        states = model.states
-        pos = self.get_positions(G, states)
-        # Mark the current state in red; all others in lightgray.
-        node_colors = ['red' if n == current_state else 'lightgray' for n in G.nodes()]
-        nx.draw_networkx_nodes(G, pos, node_color=node_colors, ax=self.ax)
-        nx.draw_networkx_labels(G, pos, ax=self.ax)
-        # Now we just call draw_better_edges once, optionally highlighting chosen_edge
-        self.draw_better_edges(G, pos, highlight_edge=chosen_edge)
+        self.G = self.build_graph(model)
+        node_colors = ['red' if n == current_state else 'lightgray' for n in self.G.nodes()]
+        nx.draw_networkx_nodes(self.G, self.pos, node_color=node_colors, ax=self.ax)
+        nx.draw_networkx_labels(self.G, self.pos, ax=self.ax)
+        self.draw_better_edges(self.G, self.pos, highlight_edge=chosen_edge)
+        self.set_fixed_view()
         self.draw()
         
     # ------------------------------
@@ -449,8 +447,13 @@ class MainWindow(QMainWindow):
         model.check(fname)
         self.model = model
         self.current_state = "S0"
+        # Reset canvas
+        self.canvas.pos = {}
+        if hasattr(model, "state_prob"):
+            model.state_prob = {}
+        if hasattr(model, "state_reward"):
+            model.state_reward = {}
         self.canvas.plot_model(model)
-
     # --------------------
     # Probability analysis
     
@@ -518,10 +521,62 @@ class MainWindow(QMainWindow):
             delta = deltaSpin.value()
             # Statistical quantitative returns (probs, rewards)
             probs, rewards = self.model.proba_statistical_quantitative(win_set, lose_set, doubt_set, epsilon, delta)
-            self.model.state_reward = {st: val for (st, val) in zip(doubt_set, rewards)}
-            
+            self.model.state_reward = {st: val for (st, val) in zip(doubt_set, rewards)}  
+        elif method == "Statistical - Qualitative":
+            dialog = QDialog(self)
+            dialog.setWindowTitle("SMC Qualitative Parameters")
+            layout = QVBoxLayout(dialog)
+            thetaLabel = QLabel("Enter theta:")
+            thetaSpin = QDoubleSpinBox()
+            thetaSpin.setRange(0.0, 1.0)
+            thetaSpin.setDecimals(2)
+            thetaSpin.setValue(0.5)
+            epsilonLabel = QLabel("Enter epsilon:")
+            epsilonSpin = QDoubleSpinBox()
+            epsilonSpin.setRange(0.0, 1.0)
+            epsilonSpin.setDecimals(2)
+            epsilonSpin.setValue(0.05)
+            alphaLabel = QLabel("Enter alpha:")
+            alphaSpin = QDoubleSpinBox()
+            alphaSpin.setRange(0.0, 1.0)
+            alphaSpin.setDecimals(2)
+            alphaSpin.setValue(0.05)
+            betaLabel = QLabel("Enter beta:")
+            betaSpin = QDoubleSpinBox()
+            betaSpin.setRange(0.0, 1.0)
+            betaSpin.setDecimals(2)
+            betaSpin.setValue(0.05)
+            maxSimsLabel = QLabel("Enter max simulations:")
+            maxSimsSpin = QDoubleSpinBox()
+            maxSimsSpin.setRange(1000, 100000)
+            maxSimsSpin.setSingleStep(1000)
+            maxSimsSpin.setValue(10000)
+            layout.addWidget(thetaLabel)
+            layout.addWidget(thetaSpin)
+            layout.addWidget(epsilonLabel)
+            layout.addWidget(epsilonSpin)
+            layout.addWidget(alphaLabel)
+            layout.addWidget(alphaSpin)
+            layout.addWidget(betaLabel)
+            layout.addWidget(betaSpin)
+            layout.addWidget(maxSimsLabel)
+            layout.addWidget(maxSimsSpin)
+            buttonBox = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+            layout.addWidget(buttonBox)
+            buttonBox.accepted.connect(dialog.accept)
+            buttonBox.rejected.connect(dialog.reject)
+            if dialog.exec_() != QDialog.Accepted:
+                return
+            theta = thetaSpin.value()
+            epsilon_qual = epsilonSpin.value()
+            alpha = alphaSpin.value()
+            beta = betaSpin.value()
+            max_sims = int(maxSimsSpin.value())
+            probs, rewards = self.model.proba_statistical_qualitative(win_set, lose_set, doubt_set,
+                                                                    theta, epsilon_qual, alpha, beta, max_sims)
+            self.model.state_reward = {state: reward for state, reward in zip(doubt_set, rewards)}
         else:
-            print(Fore.LIGHTRED_EX + "Method not implemented yet." + Style.RESET_ALL)
+            print(Fore.LIGHTRED_EX + "Unknown method!" + Style.RESET_ALL)
             return
         # 5. Show results
         print(Fore.LIGHTMAGENTA_EX + f"Probabilities : {Fore.LIGHTYELLOW_EX}{method}" + Style.RESET_ALL)
